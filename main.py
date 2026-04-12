@@ -18,9 +18,9 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 # ================= SOZLAMALAR =================
-API_TOKEN = ''  
+API_TOKEN = os.getenv('API_TOKEN')  
 BOSS_IDS = [5426806030, 6826780143] 
-OPENAI_API_KEY = ""
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', "")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 bot = Bot(token=API_TOKEN)
