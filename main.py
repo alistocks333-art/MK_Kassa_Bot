@@ -107,14 +107,14 @@ def init_db():
     conn = get_db()
     cur = conn.cursor()
     cur.execute('''CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY, name TEXT, role TEXT DEFAULT 'worker', active INTEGER DEFAULT 1)''')
+        user_id BIGINT PRIMARY KEY, name TEXT, role TEXT DEFAULT 'worker', active INTEGER DEFAULT 1)''')
     cur.execute('''CREATE TABLE IF NOT EXISTS sales (
         id SERIAL PRIMARY KEY, store_name TEXT, normalized_store TEXT,
-        total REAL, cash REAL, debt REAL, txn_type TEXT, date TEXT, worker_id INTEGER, worker_name TEXT)''')
+        total REAL, cash REAL, debt REAL, txn_type TEXT, date TEXT, worker_id BIGINT, worker_name TEXT)''')
     cur.execute('''CREATE TABLE IF NOT EXISTS stores_info (
         normalized_store TEXT PRIMARY KEY, owner_name TEXT, phone TEXT, location TEXT)''')
     cur.execute('''CREATE TABLE IF NOT EXISTS deletion_requests (
-        id SERIAL PRIMARY KEY, worker_id INTEGER, sale_id INTEGER, status TEXT DEFAULT 'pending', request_date TEXT)''')
+        id SERIAL PRIMARY KEY, worker_id BIGINT, sale_id INTEGER, status TEXT DEFAULT 'pending', request_date TEXT)''')
     conn.commit()
     conn.close()
 
