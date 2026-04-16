@@ -2,6 +2,7 @@ import asyncio
 import sqlite3
 import json
 import os
+import psycopg2
 import re
 from datetime import datetime, date
 
@@ -85,26 +86,24 @@ class AppStates(StatesGroup):
 
 # ================= BAZA =================
 def init_db():
-    conn = sqlite3.connect('kassa_pro.db')
+    conn = get_db()
     cur = conn.cursor()
     cur.execute('''CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY, name TEXT, role TEXT DEFAULT 'worker', active INTEGER DEFAULT 1)''')
     cur.execute('''CREATE TABLE IF NOT EXISTS sales (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, store_name TEXT, normalized_store TEXT,
+        id SERIAL PRIMARY KEY, store_name TEXT, normalized_store TEXT,
         total REAL, cash REAL, debt REAL, txn_type TEXT, date TEXT, worker_id INTEGER, worker_name TEXT)''')
     cur.execute('''CREATE TABLE IF NOT EXISTS stores_info (
         normalized_store TEXT PRIMARY KEY, owner_name TEXT, phone TEXT, location TEXT)''')
     cur.execute('''CREATE TABLE IF NOT EXISTS deletion_requests (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, worker_id INTEGER, sale_id INTEGER, status TEXT DEFAULT 'pending', request_date TEXT)''')
-    try: 
-        cur.execute("ALTER TABLE sales ADD COLUMN txn_type TEXT DEFAULT 'savdo'")
-        cur.execute("ALTER TABLE users ADD COLUMN active INTEGER DEFAULT 1")
-    except: pass
-    conn.commit(); conn.close()
+        id SERIAL PRIMARY KEY, worker_id INTEGER, sale_id INTEGER, status TEXT DEFAULT 'pending', request_date TEXT)''')
+    conn.commit()
+    conn.close()
 
 def get_db():
-    conn = sqlite3.connect('kassa_pro.db')
-    conn.row_factory = sqlite3.Row
+    DATABASE_URL = os.getenv('DATABASE_URL')
+    conn = psycopg2.connect(DATABASE_URL)
+    conn.row_factory = psycopg2.extras.RealDictRow
     return conn
 
 # ================= MENYULAR =================
