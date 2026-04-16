@@ -29,7 +29,6 @@ dp = Dispatcher(storage=MemoryStorage())
 
 # ================= YORDAMCHI FUNKSIYALAR =================
 def fmt(num):
-    """Raqamni pul formatiga keltiradi (1 200 $)"""
     if num is None: return "0 $"
     try:
         n = round(float(num), 2)
@@ -38,19 +37,14 @@ def fmt(num):
         return "0 $"
 
 def normalize(text):
-    """Matnni standartlashtiradi"""
     if not text: return ""
     return text.strip().lower().replace("  ", " ").replace(" ", "_")
 
 def extract_date(text):
-    """Matndan sanani ajratib oladi (DD.MM.YY yoki DD.MM.YYYY).
-    Qisqa sana (masalan 25) ni avtomatik 2025 ga aylantiradi."""
     if not text: return None, text
-    # 2 yoki 4 xonali yilni qabul qiladi (masalan: 11.01.25 yoki 11.01.2025)
     match = re.search(r'(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})', text)
     if match:
         day, month, year = match.groups()
-        # Agar 2 xonali bo'lsa (masalan 25), 2025 ga aylanadi
         year = year if len(year) == 4 else f"20{year}"
         date_str = f"{int(day):02d}.{int(month):02d}.{year}"
         clean_text = text.replace(match.group(0), "").strip()
@@ -58,12 +52,10 @@ def extract_date(text):
     return None, text
 
 def get_worker_filter(uid):
-    """Ishchi uchun xavfsiz SQL filtri"""
     if uid in BOSS_IDS: return "", ()
     return "AND worker_id = %s", (uid,)
 
 def get_worker_name(uid):
-    """Ishchi ismini bazadan olish"""
     try:
         conn = get_db(); cur = dict_cursor(conn)
         cur.execute("SELECT name FROM users WHERE user_id = %s", (uid,))
@@ -73,7 +65,6 @@ def get_worker_name(uid):
         return f"ID:{uid}"
 
 async def notify_boss(worker_uid, store, total, cash, txn_type, date_str):
-    """Boss ga xabar yuborish"""
     try:
         w_name = get_worker_name(worker_uid)
         time_str = date_str.split()[1] if ' ' in date_str else ""
@@ -104,7 +95,7 @@ async def notify_boss(worker_uid, store, total, cash, txn_type, date_str):
                 except: pass
     except Exception as e: print(f"Notify error: {e}")
 
-# ================= HOLATLAR (STATES) =================
+# ================= HOLATLAR =================
 class AppStates(StatesGroup):
     waiting_trade = State()
     search_store = State()
@@ -116,12 +107,10 @@ class AppStates(StatesGroup):
     add_worker_id = State()
     add_worker_name = State()
 
-# ================= BAZA (PostgreSQL 100% mos) =================
+# ================= BAZA =================
 def init_db():
-    """Baza jadvallarini yaratish (BIGINT bilan)"""
     conn = get_db()
     cur = conn.cursor()
-    # user_id va worker_id BIGINT qilib o'zgartirildi (katta ID lar uchun)
     cur.execute('''CREATE TABLE IF NOT EXISTS users (
         user_id BIGINT PRIMARY KEY, name TEXT, role TEXT DEFAULT 'worker', active INTEGER DEFAULT 1)''')
     cur.execute('''CREATE TABLE IF NOT EXISTS sales (
@@ -135,14 +124,12 @@ def init_db():
     conn.close()
 
 def get_db():
-    """PostgreSQL ulanish"""
     DATABASE_URL = os.getenv('DATABASE_URL')
     if not DATABASE_URL:
-        raise Exception("DATABASE_URL topilmadi! Railway'da PostgreSQL ulanganini tekshiring.")
+        raise Exception("DATABASE_URL topilmadi!")
     return psycopg2.connect(DATABASE_URL, sslmode='require')
 
 def dict_cursor(conn):
-    """PostgreSQL uchun lug'at (dict) qaytaruvchi cursor"""
     return conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
 # ================= MENYULAR =================
@@ -171,7 +158,6 @@ def get_boss_menu():
 @dp.message(Command("start"))
 @dp.message(F.text == "⬅️ Orqaga")
 async def start_cmd(message: types.Message, state: FSMContext):
-    """Botni boshlash"""
     await state.clear()
     init_db()
     uid = message.from_user.id
@@ -195,7 +181,6 @@ async def boss_kassa_live(message: types.Message):
     today = date.today().strftime("%d.%m.%Y")
     conn = get_db(); cur = dict_cursor(conn)
     
-    # COALESCE qo'shildi xavfsizlik uchun
     cur.execute("""SELECT u.name as worker_name, s.store_name, COALESCE(SUM(s.cash),0) as cash 
                    FROM sales s JOIN users u ON s.worker_id = u.user_id
                    WHERE s.date LIKE %s AND s.cash > 0 
@@ -276,7 +261,6 @@ async def add_worker_get_name(message: types.Message, state: FSMContext):
         if not worker_id: raise ValueError("ID topilmadi")
         
         conn = get_db(); cur = conn.cursor()
-        # PostgreSQL uchun ON CONFLICT (BIGINT bilan ishlaydi)
         cur.execute("""INSERT INTO users (user_id, name, role) VALUES (%s, %s, 'worker')
                        ON CONFLICT (user_id) DO UPDATE SET name = EXCLUDED.name""", (worker_id, message.text.strip()))
         conn.commit(); conn.close()
@@ -323,10 +307,12 @@ async def boss_ai_analytics(message: types.Message):
     if message.from_user.id not in BOSS_IDS: return
     if not OPENAI_API_KEY: return await message.answer("⚠️ OpenAI API kalit kiritilmagan!")
     conn = get_db(); cur = dict_cursor(conn)
-    # COALESCE qo'shildi NULL xatolarini oldini olish uchun
     cur.execute("SELECT COUNT(id), COALESCE(SUM(total),0), COALESCE(SUM(cash),0), COALESCE(SUM(total)-SUM(cash),0) FROM sales")
     g = cur.fetchone()
-    cur.execute("SELECT worker_name, COALESCE(SUM(total)-SUM(cash),0) as d FROM sales GROUP BY worker_name HAVING d > 0 ORDER BY d DESC LIMIT 3")
+    cur.execute("""SELECT worker_name, COALESCE(SUM(total)-SUM(cash),0) as d 
+                   FROM sales GROUP BY worker_name 
+                   HAVING COALESCE(SUM(total)-SUM(cash),0) > 0 
+                   ORDER BY d DESC LIMIT 3""")
     debtors = cur.fetchall()
     cur.execute("SELECT normalized_store, COALESCE(SUM(total),0) as t FROM sales GROUP BY normalized_store ORDER BY t DESC LIMIT 3")
     top_stores = cur.fetchall()
@@ -400,7 +386,7 @@ async def boss_top_stores(message: types.Message):
         out += f"{i}. 🏪 {r['normalized_store']} | 💰 {fmt(r['ts'])} | 🧾 {r['cnt']} marta\n"
     await message.answer(out if out.strip() != "🏆 TOP Do'konlar:\n" else "📊 Ma'lumot yo'q")
 
-# ================= OYLIK KASSA (BOSS + ISHCHI) =================
+# ================= OYLIK KASSA =================
 @dp.message(F.text == "📅 Oylik kassa")
 async def handle_monthly_cash(message: types.Message):
     uid = message.from_user.id
@@ -585,14 +571,13 @@ async def monthly_report(message: types.Message):
     if old_debt < 0: old_debt = 0
     await message.answer(f"📅 Oylik hisobot ({curr}):\n📉 O'tgan oydan qoldiq: {fmt(old_debt)}\n💰 Bu oy savdo: {fmt(t_curr[0])}\n💵 Bu oy naqt: {fmt(t_curr[1])}\n📉 Bu oy yangi qarz: {fmt(t_curr[2])}\n✅ Umumiy joriy qoldiq: {fmt(old_debt + (t_curr[2] or 0))}")
 
-# ================= QARZI BORLAR (TO'LIQ TUZATILGAN) =================
+# ================= QARZI BORLAR =================
 @dp.message(F.text == "🤝 Qarzi borlar")
 async def handle_debtors(message: types.Message):
     uid = message.from_user.id
     conn = get_db(); cur = dict_cursor(conn)
 
     if uid in BOSS_IDS:
-        # ✅ ROUND xatosi tuzatildi: CAST(... AS numeric) qo'shildi
         cur.execute("""
             SELECT u.user_id, u.name as worker_name,
                    ROUND(CAST(COALESCE(SUM(s.total),0) - COALESCE(SUM(s.cash),0) AS numeric), 2) as bal 
@@ -600,7 +585,7 @@ async def handle_debtors(message: types.Message):
             JOIN users u ON s.worker_id = u.user_id
             WHERE s.normalized_store IS NOT NULL AND s.normalized_store != ''
             GROUP BY u.user_id, u.name
-            HAVING bal > 0 
+            HAVING ROUND(CAST(COALESCE(SUM(s.total),0) - COALESCE(SUM(s.cash),0) AS numeric), 2) > 0
             ORDER BY bal DESC
         """)
         res = cur.fetchall()
@@ -613,7 +598,7 @@ async def handle_debtors(message: types.Message):
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"👤 {r['worker_name']} ({fmt(r['bal'])})", callback_data=f"boss_debt_uid_{r['user_id']}")] for r in res])
         await message.answer(out, reply_markup=kb)
     else:
-        cur.execute("SELECT normalized_store, ROUND(CAST(COALESCE(SUM(total),0)-COALESCE(SUM(cash),0) AS numeric), 2) as bal FROM sales WHERE worker_id = %s GROUP BY normalized_store HAVING bal > 0 ORDER BY bal DESC", (uid,))
+        cur.execute("SELECT normalized_store, ROUND(CAST(COALESCE(SUM(total),0)-COALESCE(SUM(cash),0) AS numeric), 2) as bal FROM sales WHERE worker_id = %s GROUP BY normalized_store HAVING ROUND(CAST(COALESCE(SUM(total),0)-COALESCE(SUM(cash),0) AS numeric), 2) > 0 ORDER BY bal DESC", (uid,))
         res = cur.fetchall()
         if not res:
             conn.close()
@@ -633,7 +618,6 @@ async def boss_debt_detail(callback: CallbackQuery):
         w_row = cur.fetchone()
         w_name = w_row['name'] if w_row else f"ID:{worker_id}"
 
-        # ✅ ROUND xatosi tuzatildi
         cur.execute("""
             SELECT normalized_store, 
                    ROUND(CAST(COALESCE(SUM(total),0) AS numeric), 2) as t, 
@@ -641,8 +625,8 @@ async def boss_debt_detail(callback: CallbackQuery):
             FROM sales 
             WHERE worker_id = %s AND normalized_store IS NOT NULL AND normalized_store != ''
             GROUP BY normalized_store
-            HAVING t > c
-            ORDER BY (t - c) DESC
+            HAVING ROUND(CAST(COALESCE(SUM(total),0) AS numeric), 2) > ROUND(CAST(COALESCE(SUM(cash),0) AS numeric), 2)
+            ORDER BY (ROUND(CAST(COALESCE(SUM(total),0) AS numeric), 2) - ROUND(CAST(COALESCE(SUM(cash),0) AS numeric), 2)) DESC
         """, (worker_id,))
         stores = cur.fetchall()
         conn.close()
@@ -873,6 +857,7 @@ async def handle_store_action(message: types.Message, state: FSMContext, t_type:
         data = await state.get_data()
         store = data.get('current_store')
         if not store: return await message.answer("⚠️ Xatolik: Do'kon tanlanmagan.")
+        
     now_str = date_override or datetime.now().strftime("%d.%m.%Y %H:%M")
     conn = get_db(); cur = dict_cursor(conn)
     if t_type == "naqt": vals = (store, store, 0, amount, -amount, 'naqt', now_str, message.from_user.id, message.from_user.full_name)
@@ -884,7 +869,7 @@ async def handle_store_action(message: types.Message, state: FSMContext, t_type:
     
     await notify_boss(message.from_user.id, store, amount if t_type!='qaytarish' else -amount, amount if t_type=='naqt' else 0, t_type, now_str)
     
-    txt = f"✅ {fmt(amount)} naqt qabul qilindi!" if t_type == "naqt" else (f"✅ {fmt(amount)} qaytarildi!" if t_type == "qaytarish" else f"✅ {fmt(amount)} savdo qo'shildi!")
+    txt = f"✅ {fmt(amount)} naqt qabul qilindi! ({now_str.split()[0]})" if t_type == "naqt" else (f"✅ {fmt(amount)} qaytarildi!" if t_type == "qaytarish" else f"✅ {fmt(amount)} savdo qo'shildi!")
     cancel_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Xato bo'lsa bekor qilish", callback_data=f"cancel_req_{sale_id}")]])
     await message.answer(txt, reply_markup=cancel_kb)
     await state.clear()
@@ -984,7 +969,6 @@ async def delete_store_command(message: types.Message):
 
 @dp.message(Command("delete_worker"))
 async def delete_worker_command(message: types.Message):
-    """Ishchini butunlay (barcha savdo, qarz, tarixi bilan) o'chiradi"""
     if message.from_user.id not in BOSS_IDS: return
     args = message.text.split()
     if len(args) < 2: return await message.answer("❌ Misol: /delete_worker 123456789")
