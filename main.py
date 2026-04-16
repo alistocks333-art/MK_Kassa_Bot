@@ -236,17 +236,39 @@ async def add_worker_get_id(message: types.Message, state: FSMContext):
 
 @dp.message(AppStates.add_worker_name)
 async def add_worker_get_name(message: types.Message, state: FSMContext):
-    if message.text == "⬅️ Orqaga": await state.clear(); return await boss_workers_list(message, state)
-    data = await state.get_data()
-    conn = get_db(); cur = dict_cursor(conn)
-    # PostgreSQL da INSERT OR REPLACE yo'q, ON CONFLICT ishlatiladi
-    cur.execute("""
-        INSERT INTO users (user_id, name, role) VALUES (%s, %s, 'worker')
-        ON CONFLICT (user_id) DO UPDATE SET name = EXCLUDED.name, role = EXCLUDED.role
-    """, (data['worker_id'], message.text.strip()))
-    conn.commit(); conn.close()
-    await message.answer(f"✅ Ishchi qo'shildi: {message.text}")
-    await state.clear(); await boss_workers_list(message, state)
+    if message.text == "⬅️ Orqaga":
+        await state.clear()
+        return await boss_workers_list(message, state)
+    
+    try:
+        data = await state.get_data()
+        worker_id = data.get('worker_id')
+        
+        if not worker_id:
+            return await message.answer("⚠️ Xatolik: Ishchi ID topilmadi. Qaytadan urinib ko'ring.")
+        
+        conn = get_db()
+        cur = conn.cursor()
+        
+        # PostgreSQL uchun to'g'ri INSERT
+        cur.execute("""
+            INSERT INTO users (user_id, name, role) 
+            VALUES (%s, %s, 'worker')
+            ON CONFLICT (user_id) 
+            DO UPDATE SET name = EXCLUDED.name, role = EXCLUDED.role, active = 1
+        """, (worker_id, message.text.strip()))
+        
+        conn.commit()
+        conn.close()
+        
+        await message.answer(f"✅ Ishchi qo'shildi: **{message.text.strip()}**\n🆔 ID: `{worker_id}`", 
+                            parse_mode="Markdown")
+        await state.clear()
+        await boss_workers_list(message, state)
+        
+    except Exception as e:
+        await message.answer(f"❌ Xatolik yuz berdi: {e}\nIltimos, qaytadan urinib ko'ring.")
+        await state.clear()
 
 @dp.message(F.text == "🚫 Ishdan bo'shatish (Inline)")
 async def fire_worker_inline(message: types.Message):
