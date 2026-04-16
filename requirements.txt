@@ -3,3 +3,4 @@ openai
 matplotlib
 Pillow
 requests
+psycopg2-binary
