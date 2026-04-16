@@ -155,25 +155,51 @@ async def boss_kassa_live(message: types.Message):
     if message.from_user.id not in BOSS_IDS: return
     today = date.today().strftime("%d.%m.%Y")
     conn = get_db(); cur = conn.cursor()
+    
     cur.execute("""SELECT u.name as worker_name, s.store_name, SUM(s.cash) as cash 
                    FROM sales s JOIN users u ON s.worker_id = u.user_id
-                   WHERE s.date LIKE ? AND s.cash > 0 GROUP BY u.name, s.store_name ORDER BY u.name""", (f"{today}%",))
+                   WHERE s.date LIKE ? AND s.cash > 0 
+                   GROUP BY u.name, s.store_name 
+                   ORDER BY u.name, s.store_name""", (f"{today}%",))
     rows = cur.fetchall()
+    
     cur.execute("""SELECT u.name as worker_name, SUM(s.cash) as total 
                    FROM sales s JOIN users u ON s.worker_id = u.user_id
-                   WHERE s.date LIKE ? AND s.cash > 0 GROUP BY u.name""", (f"{today}%",))
+                   WHERE s.date LIKE ? AND s.cash > 0 
+                   GROUP BY u.name""", (f"{today}%",))
     worker_totals = {r['worker_name']: r['total'] for r in cur.fetchall()}
+    
+    # Umumiy jami (barcha ishchilar)
+    cur.execute("""SELECT SUM(s.cash) as grand_total
+                   FROM sales s
+                   WHERE s.date LIKE ? AND s.cash > 0""", (f"{today}%",))
+    grand_total = cur.fetchone()['grand_total'] or 0
     conn.close()
-    if not rows: return await message.answer("📅 Bugun hech qanday naqt tushumi yo'q.")
-    out = f"💰 Kassa (Live) - {today}\n"
+    
+    if not rows: 
+        return await message.answer("📅 Bugun hech qanday naqt tushumi yo'q.")
+    
+    out = f"💰 Kassa (Live) - {today}\n\n"
     current_worker = ""
+    
     for r in rows:
         if r['worker_name'] != current_worker:
-            if current_worker: out += f"👤 {current_worker} - Jami: {fmt(worker_totals.get(current_worker, 0))}\n\n"
+            if current_worker:
+                out += f"\n✅ **Jami: {fmt(worker_totals.get(current_worker, 0))}**\n\n"
             current_worker = r['worker_name']
-        out += f"👤 {r['worker_name']} - 🏪 {r['store_name']} - {fmt(r['cash'])}💵\n"
-    out += f"👤 {current_worker} - Jami: {fmt(worker_totals.get(current_worker, 0))}\n"
-    await message.answer(out)
+            out += f"👤 **{current_worker}**:\n"
+        
+        out += f"  🏪 {r['store_name']} - {fmt(r['cash'])}\n"
+    
+    if current_worker:
+        out += f"\n✅ **Jami: {fmt(worker_totals.get(current_worker, 0))}**\n"
+    
+    # ✅ Umumiy jami (barcha ishchilar)
+    out += f"\n{'='*30}\n"
+    out += f"💵 **UMUMIY JAMI: {fmt(grand_total)}**\n"
+    out += f"👥 Ishchilar soni: {len(worker_totals)} ta"
+    
+    await message.answer(out, parse_mode="Markdown")
 
 @dp.message(F.text == "👥 Ishchilar")
 async def boss_workers_list(message: types.Message, state: FSMContext):
@@ -886,6 +912,24 @@ async def save_owner_info(message: types.Message, state: FSMContext):
     await message.answer("✅ Saqlandi!")
     await state.clear()
     await send_owner_info(message, store, state)
+
+# Faqat boss uchun do'kon o'chirish buyrug'i
+@dp.message(Command("delete_store"))
+async def delete_store_command(message: types.Message):
+    if message.from_user.id not in BOSS_IDS:
+        return
+    
+    args = message.text.split()
+    if len(args) < 2:
+        return await message.answer("❌ Misol: /delete_store qatortol")
+    
+    store_name = args[1]
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("DELETE FROM sales WHERE normalized_store = ?", (store_name,))
+    cur.execute("DELETE FROM stores_info WHERE normalized_store = ?", (store_name,))
+    conn.commit(); conn.close()
+    
+    await message.answer(f"✅ {store_name} o'chirildi!")
 
 @dp.message(F.text == "✍️ Savdo qo'shish")
 async def trade_init(message: types.Message, state: FSMContext):
