@@ -4,7 +4,7 @@ import os
 import psycopg2
 import psycopg2.extras
 import re
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -29,12 +29,18 @@ dp = Dispatcher(storage=MemoryStorage())
 
 # ================= YORDAMCHI FUNKSIYALAR =================
 def fmt(num):
+    """Raqamni pul formatiga keltiradi (1 200 $)"""
     if num is None: return "0 $"
-    n = round(float(num), 2)
-    return f"{n:,.2f}".replace(".00", "").replace(",", " ") + " $"
+    try:
+        n = round(float(num), 2)
+        return f"{n:,.2f}".replace(".00", "").replace(",", " ") + " $"
+    except: 
+        return "0 $"
 
 def normalize(text):
-    return text.strip().lower().replace("  ", " ")
+    """Matnni standartlashtiradi"""
+    if not text: return ""
+    return text.strip().lower().replace("  ", " ").replace(" ", "_")
 
 def extract_date(text):
     """Matndan sanani ajratib oladi (DD.MM.YY yoki DD.MM.YYYY).
@@ -52,45 +58,53 @@ def extract_date(text):
     return None, text
 
 def get_worker_filter(uid):
+    """Ishchi uchun xavfsiz SQL filtri"""
     if uid in BOSS_IDS: return "", ()
     return "AND worker_id = %s", (uid,)
 
 def get_worker_name(uid):
-    conn = get_db(); cur = dict_cursor(conn)
-    cur.execute("SELECT name FROM users WHERE user_id = %s", (uid,))
-    res = cur.fetchone(); conn.close()
-    return res['name'] if res and res['name'] else f"ID:{uid}"
+    """Ishchi ismini bazadan olish"""
+    try:
+        conn = get_db(); cur = dict_cursor(conn)
+        cur.execute("SELECT name FROM users WHERE user_id = %s", (uid,))
+        res = cur.fetchone(); conn.close()
+        return res['name'] if res and res['name'] else f"ID:{uid}"
+    except: 
+        return f"ID:{uid}"
 
 async def notify_boss(worker_uid, store, total, cash, txn_type, date_str):
-    worker_name = get_worker_name(worker_uid)
-    time_str = date_str.split()[1] if ' ' in date_str else ""
-    msg = ""
-    if txn_type in ['savdo', 'savdo_yangi']:
-        debt = total - cash
-        msg = (f"🔔 **Yangi savdo!**\n"
-               f"👤 Ishchi: {worker_name}\n"
-               f"🏪 Do'kon: `{store}`\n"
-               f"💰 Savdo: {fmt(total)}\n"
-               f"💵 Naqt: {fmt(cash)}\n"
-               f"📉 Qarz: {fmt(debt)}\n"
-               f"📅 Sana: {date_str.split()[0] if ' ' in date_str else date_str}")
-    elif txn_type == 'naqt':
-        msg = (f"💵 **Naqt kiritildi!**\n"
-               f"👤 Ishchi: {worker_name}\n"
-               f"🏪 {store} | 💵 {fmt(cash)} | 🕒 {time_str}\n"
-               f"📅 {date_str.split()[0] if ' ' in date_str else date_str}")
-    elif txn_type == 'qaytarish':
-        msg = (f"🔄 **Qaytarildi!**\n"
-               f"👤 Ishchi: {worker_name}\n"
-               f"🏪 {store} | 🔄 {fmt(abs(total))} | 🕒 {time_str}\n"
-               f"📅 {date_str.split()[0] if ' ' in date_str else date_str}")
-    
-    if msg:
-        for boss_id in BOSS_IDS:
-            try: await bot.send_message(boss_id, msg, parse_mode="Markdown")
-            except: pass
+    """Boss ga xabar yuborish"""
+    try:
+        w_name = get_worker_name(worker_uid)
+        time_str = date_str.split()[1] if ' ' in date_str else ""
+        msg = ""
+        if txn_type in ['savdo', 'savdo_yangi']:
+            debt = total - cash
+            msg = (f"🔔 **Yangi savdo!**\n"
+                   f"👤 Ishchi: {w_name}\n"
+                   f"🏪 Do'kon: `{store}`\n"
+                   f"💰 Savdo: {fmt(total)}\n"
+                   f"💵 Naqt: {fmt(cash)}\n"
+                   f"📉 Qarz: {fmt(debt)}\n"
+                   f"📅 Sana: {date_str.split()[0] if ' ' in date_str else date_str}")
+        elif txn_type == 'naqt':
+            msg = (f"💵 **Naqt kiritildi!**\n"
+                   f"👤 Ishchi: {w_name}\n"
+                   f"🏪 {store} | 💵 {fmt(cash)} | 🕒 {time_str}\n"
+                   f"📅 {date_str.split()[0] if ' ' in date_str else date_str}")
+        elif txn_type == 'qaytarish':
+            msg = (f"🔄 **Qaytarildi!**\n"
+                   f"👤 Ishchi: {w_name}\n"
+                   f"🏪 {store} | 🔄 {fmt(abs(total))} | 🕒 {time_str}\n"
+                   f"📅 {date_str.split()[0] if ' ' in date_str else date_str}")
+        
+        if msg:
+            for bid in BOSS_IDS:
+                try: await bot.send_message(bid, msg, parse_mode="Markdown")
+                except: pass
+    except Exception as e: print(f"Notify error: {e}")
 
-# ================= HOLATLAR =================
+# ================= HOLATLAR (STATES) =================
 class AppStates(StatesGroup):
     waiting_trade = State()
     search_store = State()
@@ -104,8 +118,10 @@ class AppStates(StatesGroup):
 
 # ================= BAZA (PostgreSQL 100% mos) =================
 def init_db():
+    """Baza jadvallarini yaratish (BIGINT bilan)"""
     conn = get_db()
     cur = conn.cursor()
+    # user_id va worker_id BIGINT qilib o'zgartirildi (katta ID lar uchun)
     cur.execute('''CREATE TABLE IF NOT EXISTS users (
         user_id BIGINT PRIMARY KEY, name TEXT, role TEXT DEFAULT 'worker', active INTEGER DEFAULT 1)''')
     cur.execute('''CREATE TABLE IF NOT EXISTS sales (
@@ -119,6 +135,7 @@ def init_db():
     conn.close()
 
 def get_db():
+    """PostgreSQL ulanish"""
     DATABASE_URL = os.getenv('DATABASE_URL')
     if not DATABASE_URL:
         raise Exception("DATABASE_URL topilmadi! Railway'da PostgreSQL ulanganini tekshiring.")
@@ -154,6 +171,7 @@ def get_boss_menu():
 @dp.message(Command("start"))
 @dp.message(F.text == "⬅️ Orqaga")
 async def start_cmd(message: types.Message, state: FSMContext):
+    """Botni boshlash"""
     await state.clear()
     init_db()
     uid = message.from_user.id
@@ -177,23 +195,24 @@ async def boss_kassa_live(message: types.Message):
     today = date.today().strftime("%d.%m.%Y")
     conn = get_db(); cur = dict_cursor(conn)
     
-    cur.execute("""SELECT u.name as worker_name, s.store_name, SUM(s.cash) as cash 
+    # COALESCE qo'shildi xavfsizlik uchun
+    cur.execute("""SELECT u.name as worker_name, s.store_name, COALESCE(SUM(s.cash),0) as cash 
                    FROM sales s JOIN users u ON s.worker_id = u.user_id
                    WHERE s.date LIKE %s AND s.cash > 0 
                    GROUP BY u.name, s.store_name 
                    ORDER BY u.name, s.store_name""", (f"{today}%",))
     rows = cur.fetchall()
     
-    cur.execute("""SELECT u.name as worker_name, SUM(s.cash) as total 
+    cur.execute("""SELECT u.name as worker_name, COALESCE(SUM(s.cash),0) as total 
                    FROM sales s JOIN users u ON s.worker_id = u.user_id
                    WHERE s.date LIKE %s AND s.cash > 0 
                    GROUP BY u.name""", (f"{today}%",))
     worker_totals = {r['worker_name']: r['total'] for r in cur.fetchall()}
     
-    cur.execute("""SELECT SUM(s.cash) as grand_total
+    cur.execute("""SELECT COALESCE(SUM(s.cash),0) as grand_total
                    FROM sales s
                    WHERE s.date LIKE %s AND s.cash > 0""", (f"{today}%",))
-    grand_total = cur.fetchone()['grand_total'] or 0
+    grand_total = cur.fetchone()['grand_total']
     conn.close()
     
     if not rows: 
@@ -257,7 +276,7 @@ async def add_worker_get_name(message: types.Message, state: FSMContext):
         if not worker_id: raise ValueError("ID topilmadi")
         
         conn = get_db(); cur = conn.cursor()
-        # PostgreSQL uchun ON CONFLICT
+        # PostgreSQL uchun ON CONFLICT (BIGINT bilan ishlaydi)
         cur.execute("""INSERT INTO users (user_id, name, role) VALUES (%s, %s, 'worker')
                        ON CONFLICT (user_id) DO UPDATE SET name = EXCLUDED.name""", (worker_id, message.text.strip()))
         conn.commit(); conn.close()
@@ -304,11 +323,12 @@ async def boss_ai_analytics(message: types.Message):
     if message.from_user.id not in BOSS_IDS: return
     if not OPENAI_API_KEY: return await message.answer("⚠️ OpenAI API kalit kiritilmagan!")
     conn = get_db(); cur = dict_cursor(conn)
-    cur.execute("SELECT COUNT(id), SUM(total), SUM(cash), SUM(total)-SUM(cash) FROM sales")
+    # COALESCE qo'shildi NULL xatolarini oldini olish uchun
+    cur.execute("SELECT COUNT(id), COALESCE(SUM(total),0), COALESCE(SUM(cash),0), COALESCE(SUM(total)-SUM(cash),0) FROM sales")
     g = cur.fetchone()
-    cur.execute("SELECT worker_name, SUM(total)-SUM(cash) as d FROM sales GROUP BY worker_name HAVING d > 0 ORDER BY d DESC LIMIT 3")
+    cur.execute("SELECT worker_name, COALESCE(SUM(total)-SUM(cash),0) as d FROM sales GROUP BY worker_name HAVING d > 0 ORDER BY d DESC LIMIT 3")
     debtors = cur.fetchall()
-    cur.execute("SELECT normalized_store, SUM(total) as t FROM sales GROUP BY normalized_store ORDER BY t DESC LIMIT 3")
+    cur.execute("SELECT normalized_store, COALESCE(SUM(total),0) as t FROM sales GROUP BY normalized_store ORDER BY t DESC LIMIT 3")
     top_stores = cur.fetchall()
     conn.close()
     context = (f"📊 BAZA HOLATI:\n"
@@ -334,9 +354,9 @@ async def boss_monthly_archive(message: types.Message):
     out = f"📅 Oylik arxiv ({curr}):\n\n"
     grand_total_sales = grand_total_cash = grand_total_debt = 0
     for w in workers:
-        cur.execute("SELECT SUM(total), SUM(cash), SUM(total)-SUM(cash) FROM sales WHERE worker_id = %s AND date LIKE %s", (w['user_id'], f"%{curr}%"))
+        cur.execute("SELECT COALESCE(SUM(total),0), COALESCE(SUM(cash),0), COALESCE(SUM(total)-SUM(cash),0) FROM sales WHERE worker_id = %s AND date LIKE %s", (w['user_id'], f"%{curr}%"))
         r = cur.fetchone()
-        t, c, d = r[0] or 0, r[1] or 0, r[2] or 0
+        t, c, d = r[0], r[1], r[2]
         out += f"👥 {w['name']}\n📉 O'tgan oydan qoldiq: 0 $\n💰 Bu oy savdo: {fmt(t)}\n💵 Bu oy naqt: {fmt(c)}\n📉 Bu oy yangi qarz: {fmt(d)}\n✅ Umumiy joriy qoldiq: {fmt(d)}\n\n"
         grand_total_sales += t; grand_total_cash += c; grand_total_debt += d
     out += f"📅 Oylik hisobot ({curr}): Umumiy\n"
@@ -359,8 +379,8 @@ async def boss_all_stores(message: types.Message):
 async def boss_top_workers(message: types.Message):
     if message.from_user.id not in BOSS_IDS: return
     conn = get_db(); cur = dict_cursor(conn)
-    cur.execute("""SELECT u.name as worker_name, SUM(s.total) as ts, SUM(s.cash) as tc, 
-                          SUM(s.total)-SUM(s.cash) as td, COUNT(s.id) as cnt 
+    cur.execute("""SELECT u.name as worker_name, COALESCE(SUM(s.total),0) as ts, COALESCE(SUM(s.cash),0) as tc, 
+                          COALESCE(SUM(s.total)-SUM(s.cash),0) as td, COUNT(s.id) as cnt 
                    FROM sales s JOIN users u ON s.worker_id = u.user_id 
                    GROUP BY u.name ORDER BY ts DESC""")
     res = cur.fetchall(); conn.close()
@@ -373,7 +393,7 @@ async def boss_top_workers(message: types.Message):
 async def boss_top_stores(message: types.Message):
     if message.from_user.id not in BOSS_IDS: return
     conn = get_db(); cur = dict_cursor(conn)
-    cur.execute("SELECT normalized_store, SUM(total) as ts, COUNT(id) as cnt FROM sales GROUP BY normalized_store ORDER BY ts DESC LIMIT 10")
+    cur.execute("SELECT normalized_store, COALESCE(SUM(total),0) as ts, COUNT(id) as cnt FROM sales GROUP BY normalized_store ORDER BY ts DESC LIMIT 10")
     res = cur.fetchall(); conn.close()
     out = "🏆 TOP Do'konlar:\n"
     for i, r in enumerate(res, 1):
@@ -388,7 +408,7 @@ async def handle_monthly_cash(message: types.Message):
 
     if uid not in BOSS_IDS:
         conn = get_db(); cur = dict_cursor(conn)
-        cur.execute("""SELECT SUBSTR(date, 1, 10) as d, SUM(cash) FROM sales 
+        cur.execute("""SELECT SUBSTR(date, 1, 10) as d, COALESCE(SUM(cash),0) FROM sales 
                        WHERE worker_id = %s AND date LIKE %s AND cash > 0 GROUP BY d ORDER BY d DESC""", (uid, f"%{month}%"))
         rows = cur.fetchall(); conn.close()
         if not rows: return await message.answer(f"📅 {month} oyida naqt kassa harakati yo'q.")
@@ -419,11 +439,11 @@ async def day_all_summary(callback: CallbackQuery):
     await callback.answer()
     day = callback.data.replace("day_all_", "")
     conn = get_db(); cur = dict_cursor(conn)
-    cur.execute("""SELECT u.name, s.store_name, SUM(s.cash) as cash 
+    cur.execute("""SELECT u.name, s.store_name, COALESCE(SUM(s.cash),0) as cash 
                    FROM sales s JOIN users u ON s.worker_id = u.user_id 
                    WHERE s.date LIKE %s AND s.cash > 0 GROUP BY u.name, s.store_name""", (f"{day}%",))
     rows = cur.fetchall()
-    cur.execute("""SELECT u.name, SUM(s.cash) as total 
+    cur.execute("""SELECT u.name, COALESCE(SUM(s.cash),0) as total 
                    FROM sales s JOIN users u ON s.worker_id = u.user_id 
                    WHERE s.date LIKE %s AND s.cash > 0 GROUP BY u.name""", (f"{day}%",))
     totals = {r['name']: r['total'] for r in cur.fetchall()}; conn.close()
@@ -468,7 +488,7 @@ async def day_worker_summary(callback: CallbackQuery):
     uid, day = int(parts[0]), parts[1]
     conn = get_db(); cur = dict_cursor(conn)
     cur.execute("SELECT name FROM users WHERE user_id=%s", (uid,)); w_name = cur.fetchone()['name']
-    cur.execute("""SELECT store_name, SUM(cash) as cash FROM sales 
+    cur.execute("""SELECT store_name, COALESCE(SUM(cash),0) as cash FROM sales 
                    WHERE worker_id=%s AND date LIKE %s AND cash>0 GROUP BY store_name""", (uid, f"{day}%"))
     rows = cur.fetchall(); conn.close()
     out = f"💰 {w_name} - {day}\n"
@@ -491,9 +511,9 @@ async def calculate_salary(message: types.Message):
         out = f"💰 Oylik maosh hisoboti ({month}):\n\n"
         grand_salary = 0
         for w in workers:
-            cur.execute("""SELECT SUM(cash) FROM sales WHERE worker_id = %s AND date LIKE %s AND cash > 0""", (w['user_id'], f"%{month}%"))
+            cur.execute("""SELECT COALESCE(SUM(cash),0) FROM sales WHERE worker_id = %s AND date LIKE %s AND cash > 0""", (w['user_id'], f"%{month}%"))
             result = cur.fetchone()
-            total_cash = result[0] if result[0] else 0.0
+            total_cash = result[0]
             percent = total_cash * 0.08
             fixa = 150 if 1500 <= total_cash < 2000 else (200 if 2000 <= total_cash < 3000 else (300 if total_cash >= 3000 else 0))
             salary = percent + fixa; grand_salary += salary
@@ -504,8 +524,8 @@ async def calculate_salary(message: types.Message):
     w_cond, w_params = get_worker_filter(uid)
     params = (f"%{month}%",) + w_params
     conn = get_db(); cur = dict_cursor(conn)
-    cur.execute(f"SELECT SUM(cash) FROM sales WHERE date LIKE %s AND cash > 0 {w_cond}", params)
-    total_cash = cur.fetchone()[0] or 0.0; conn.close()
+    cur.execute(f"SELECT COALESCE(SUM(cash),0) FROM sales WHERE date LIKE %s AND cash > 0 {w_cond}", params)
+    total_cash = cur.fetchone()[0]; conn.close()
     percent = total_cash * 0.08
     fixa = 150 if 1500 <= total_cash < 2000 else (200 if 2000 <= total_cash < 3000 else (300 if total_cash >= 3000 else 0))
     await message.answer(f"💰 Oylik maosh hisoboti ({month}):\n\n📊 Yig'ilgan naqt: {fmt(total_cash)}\n📈 8% ulush: {fmt(percent)}\n🎁 Fiksa bonus: {fmt(fixa)}\n✅ Itog (Jami maosh): {fmt(percent + fixa)}")
@@ -521,8 +541,8 @@ async def daily_cash(message: types.Message):
     conn = get_db(); cur = dict_cursor(conn)
     cur.execute(f"SELECT store_name, cash, date FROM sales WHERE date LIKE %s AND cash > 0 {w_cond} ORDER BY id DESC", params)
     rows = cur.fetchall()
-    cur.execute(f"SELECT SUM(cash) FROM sales WHERE date LIKE %s AND cash > 0 {w_cond}", params)
-    total_cash = cur.fetchone()[0] or 0; conn.close()
+    cur.execute(f"SELECT COALESCE(SUM(cash),0) FROM sales WHERE date LIKE %s AND cash > 0 {w_cond}", params)
+    total_cash = cur.fetchone()[0]; conn.close()
     if not rows: return await message.answer("📅 Bugun naqt kiritilmagan.")
     out = f"📅 Bugungi naqt harakatlar ({today}):\n"
     for r in rows: out += f"🏪 {r['store_name']} | 💵 {fmt(r['cash'])} | 🕒 {r['date'].split()[1]}\n"
@@ -557,24 +577,25 @@ async def monthly_report(message: types.Message):
     params_curr = (f"%{curr}%",) + w_params
     params_all = w_params
     conn = get_db(); cur = dict_cursor(conn)
-    cur.execute(f"SELECT SUM(total), SUM(cash) FROM sales WHERE 1=1 {w_cond}", params_all)
+    cur.execute(f"SELECT COALESCE(SUM(total),0), COALESCE(SUM(cash),0) FROM sales WHERE 1=1 {w_cond}", params_all)
     t_all = cur.fetchone()
-    cur.execute(f"SELECT SUM(total), SUM(cash), SUM(total)-SUM(cash) FROM sales WHERE date LIKE %s {w_cond}", params_curr)
+    cur.execute(f"SELECT COALESCE(SUM(total),0), COALESCE(SUM(cash),0), COALESCE(SUM(total)-SUM(cash),0) FROM sales WHERE date LIKE %s {w_cond}", params_curr)
     t_curr = cur.fetchone(); conn.close()
     old_debt = ((t_all[0] or 0) - (t_all[1] or 0)) - ((t_curr[2] or 0) if t_curr[2] else 0)
     if old_debt < 0: old_debt = 0
     await message.answer(f"📅 Oylik hisobot ({curr}):\n📉 O'tgan oydan qoldiq: {fmt(old_debt)}\n💰 Bu oy savdo: {fmt(t_curr[0])}\n💵 Bu oy naqt: {fmt(t_curr[1])}\n📉 Bu oy yangi qarz: {fmt(t_curr[2])}\n✅ Umumiy joriy qoldiq: {fmt(old_debt + (t_curr[2] or 0))}")
 
-# ================= QARZI BORLAR =================
+# ================= QARZI BORLAR (TO'LIQ TUZATILGAN) =================
 @dp.message(F.text == "🤝 Qarzi borlar")
 async def handle_debtors(message: types.Message):
     uid = message.from_user.id
     conn = get_db(); cur = dict_cursor(conn)
 
     if uid in BOSS_IDS:
+        # ✅ ROUND xatosi tuzatildi: CAST(... AS numeric) qo'shildi
         cur.execute("""
             SELECT u.user_id, u.name as worker_name,
-                   ROUND(SUM(s.total) - SUM(s.cash), 2) as bal 
+                   ROUND(CAST(COALESCE(SUM(s.total),0) - COALESCE(SUM(s.cash),0) AS numeric), 2) as bal 
             FROM sales s
             JOIN users u ON s.worker_id = u.user_id
             WHERE s.normalized_store IS NOT NULL AND s.normalized_store != ''
@@ -592,7 +613,7 @@ async def handle_debtors(message: types.Message):
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"👤 {r['worker_name']} ({fmt(r['bal'])})", callback_data=f"boss_debt_uid_{r['user_id']}")] for r in res])
         await message.answer(out, reply_markup=kb)
     else:
-        cur.execute("SELECT normalized_store, SUM(total)-SUM(cash) as bal FROM sales WHERE worker_id = %s GROUP BY normalized_store HAVING bal > 0 ORDER BY bal DESC", (uid,))
+        cur.execute("SELECT normalized_store, ROUND(CAST(COALESCE(SUM(total),0)-COALESCE(SUM(cash),0) AS numeric), 2) as bal FROM sales WHERE worker_id = %s GROUP BY normalized_store HAVING bal > 0 ORDER BY bal DESC", (uid,))
         res = cur.fetchall()
         if not res:
             conn.close()
@@ -612,10 +633,11 @@ async def boss_debt_detail(callback: CallbackQuery):
         w_row = cur.fetchone()
         w_name = w_row['name'] if w_row else f"ID:{worker_id}"
 
+        # ✅ ROUND xatosi tuzatildi
         cur.execute("""
             SELECT normalized_store, 
-                   ROUND(SUM(total), 2) as t, 
-                   ROUND(SUM(cash), 2) as c
+                   ROUND(CAST(COALESCE(SUM(total),0) AS numeric), 2) as t, 
+                   ROUND(CAST(COALESCE(SUM(cash),0) AS numeric), 2) as c
             FROM sales 
             WHERE worker_id = %s AND normalized_store IS NOT NULL AND normalized_store != ''
             GROUP BY normalized_store
@@ -661,12 +683,12 @@ async def boss_debt_store_view(callback: CallbackQuery, state: FSMContext):
     await state.update_data(debt_worker_id=worker_id, current_store=store)
     
     conn = get_db(); cur = dict_cursor(conn)
-    cur.execute("SELECT SUM(total), SUM(cash) FROM sales WHERE normalized_store = %s AND worker_id = %s", (store, worker_id))
+    cur.execute("SELECT COALESCE(SUM(total),0), COALESCE(SUM(cash),0) FROM sales WHERE normalized_store = %s AND worker_id = %s", (store, worker_id))
     res_total = cur.fetchone()
     cur.execute("SELECT txn_type, total, cash, date FROM sales WHERE normalized_store = %s AND worker_id = %s ORDER BY id DESC LIMIT 15", (store, worker_id))
     history = cur.fetchall(); conn.close()
     
-    total = res_total[0] or 0; cash = res_total[1] or 0; balance = total - cash
+    total = res_total[0]; cash = res_total[1]; balance = total - cash
     out = f"🏪 **{store.upper()}** hisoboti:\n💰 Umumiy savdo: {fmt(total)} | 💵 Yig'ilgan: {fmt(cash)}\n📉 **Qoldiq qarz: {fmt(balance)}**\n\n📜 Harakatlar tarixi:\n"
     for h in history:
         if h['txn_type'] in ['savdo', 'savdo_yangi']: 
@@ -751,11 +773,11 @@ async def store_details(callback: CallbackQuery, state: FSMContext):
     w_cond, w_params = get_worker_filter(uid)
     full_params = (store,) + w_params
     conn = get_db(); cur = dict_cursor(conn)
-    cur.execute(f"SELECT SUM(total), SUM(cash) FROM sales WHERE normalized_store = %s {w_cond}", full_params)
+    cur.execute(f"SELECT COALESCE(SUM(total),0), COALESCE(SUM(cash),0) FROM sales WHERE normalized_store = %s {w_cond}", full_params)
     res_total = cur.fetchone()
     cur.execute(f"SELECT txn_type, total, cash, date FROM sales WHERE normalized_store = %s {w_cond} ORDER BY id DESC LIMIT 15", full_params)
     history = cur.fetchall(); conn.close()
-    total = res_total[0] or 0; cash = res_total[1] or 0; balance = total - cash
+    total = res_total[0]; cash = res_total[1]; balance = total - cash
     out = f"🏪 **{store.upper()}** hisoboti:\n💰 Umumiy savdo: {fmt(total)} | 💵 Yig'ilgan: {fmt(cash)}\n📉 **Qoldiq qarz: {fmt(balance)}**\n\n📜 Harakatlar tarixi:\n"
     for h in history:
         if h['txn_type'] in ['savdo', 'savdo_yangi']: 
@@ -851,31 +873,18 @@ async def handle_store_action(message: types.Message, state: FSMContext, t_type:
         data = await state.get_data()
         store = data.get('current_store')
         if not store: return await message.answer("⚠️ Xatolik: Do'kon tanlanmagan.")
-        
     now_str = date_override or datetime.now().strftime("%d.%m.%Y %H:%M")
     conn = get_db(); cur = dict_cursor(conn)
-    
-    # PostgreSQL da RETURNING id ishlatiladi
-    if t_type == "naqt": 
-        cur.execute("""INSERT INTO sales (store_name, normalized_store, total, cash, debt, txn_type, date, worker_id, worker_name) 
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""", 
-                    (store, store, 0, amount, -amount, 'naqt', now_str, message.from_user.id, message.from_user.full_name))
-    elif t_type == "qaytarish": 
-        cur.execute("""INSERT INTO sales (store_name, normalized_store, total, cash, debt, txn_type, date, worker_id, worker_name) 
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""", 
-                    (store, store, -amount, 0, -amount, 'qaytarish', now_str, message.from_user.id, message.from_user.full_name))
-    elif t_type == "savdo_yangi": 
-        cur.execute("""INSERT INTO sales (store_name, normalized_store, total, cash, debt, txn_type, date, worker_id, worker_name) 
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""", 
-                    (store, store, amount, 0, amount, 'savdo', now_str, message.from_user.id, message.from_user.full_name))
+    if t_type == "naqt": vals = (store, store, 0, amount, -amount, 'naqt', now_str, message.from_user.id, message.from_user.full_name)
+    elif t_type == "qaytarish": vals = (store, store, -amount, 0, -amount, 'qaytarish', now_str, message.from_user.id, message.from_user.full_name)
+    elif t_type == "savdo_yangi": vals = (store, store, amount, 0, amount, 'savdo', now_str, message.from_user.id, message.from_user.full_name)
     else: return await message.answer("⚠️ Noto'g'ri amal.")
-    
-    sale_id = cur.fetchone()[0]
-    conn.commit(); conn.close()
+    cur.execute("INSERT INTO sales (store_name, normalized_store, total, cash, debt, txn_type, date, worker_id, worker_name) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id", vals)
+    sale_id = cur.fetchone()[0]; conn.commit(); conn.close()
     
     await notify_boss(message.from_user.id, store, amount if t_type!='qaytarish' else -amount, amount if t_type=='naqt' else 0, t_type, now_str)
     
-    txt = f"✅ {fmt(amount)} naqt qabul qilindi! ({now_str.split()[0]})" if t_type == "naqt" else (f"✅ {fmt(amount)} qaytarildi!" if t_type == "qaytarish" else f"✅ {fmt(amount)} savdo qo'shildi!")
+    txt = f"✅ {fmt(amount)} naqt qabul qilindi!" if t_type == "naqt" else (f"✅ {fmt(amount)} qaytarildi!" if t_type == "qaytarish" else f"✅ {fmt(amount)} savdo qo'shildi!")
     cancel_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Xato bo'lsa bekor qilish", callback_data=f"cancel_req_{sale_id}")]])
     await message.answer(txt, reply_markup=cancel_kb)
     await state.clear()
@@ -888,9 +897,9 @@ async def send_store_details(message: types.Message, store: str, state: FSMConte
     w_cond, w_params = get_worker_filter(uid)
     full_params = (store,) + w_params
     conn = get_db(); cur = dict_cursor(conn)
-    cur.execute(f"SELECT SUM(total), SUM(cash) FROM sales WHERE normalized_store = %s {w_cond}", full_params)
+    cur.execute(f"SELECT COALESCE(SUM(total),0), COALESCE(SUM(cash),0) FROM sales WHERE normalized_store = %s {w_cond}", full_params)
     res = cur.fetchone()
-    total = res[0] or 0; cash = res[1] or 0; balance = total - cash
+    total = res[0]; cash = res[1]; balance = total - cash
     cur.execute(f"SELECT txn_type, total, cash, date FROM sales WHERE normalized_store = %s {w_cond} ORDER BY id DESC LIMIT 15", full_params)
     history = cur.fetchall(); conn.close()
     out = f"🏪 **{store.upper()}** hisoboti:\n💰 Umumiy savdo: {fmt(total)} | 💵 Yig'ilgan: {fmt(cash)}\n📉 **Qoldiq qarz: {fmt(balance)}**\n\n📜 Harakatlar tarixi:\n"
@@ -955,17 +964,13 @@ async def save_owner_info(message: types.Message, state: FSMContext):
     col_map = {"name": "owner_name", "phone": "phone", "loc": "location"}
     col = col_map.get(field, "owner_name")
     conn = get_db(); cur = dict_cursor(conn)
-    # PostgreSQL ON CONFLICT
-    cur.execute(f"""INSERT INTO stores_info (normalized_store, owner_name, phone, location) 
-                    VALUES (%s, %s, %s, %s) 
-                    ON CONFLICT (normalized_store) DO UPDATE SET {col} = EXCLUDED.{col}""", 
+    cur.execute("INSERT INTO stores_info (normalized_store, owner_name, phone, location) VALUES (%s, %s, %s, %s) ON CONFLICT (normalized_store) DO UPDATE SET " + col + " = EXCLUDED." + col, 
                 (store, '' if col!='owner_name' else message.text.strip(), '' if col!='phone' else message.text.strip(), '' if col!='location' else message.text.strip()))
     conn.commit(); conn.close()
     await message.answer("✅ Saqlandi!")
     await state.clear()
     await send_owner_info(message, store, state)
 
-# ================= O'CHIRISH BUYRUQLARI =================
 @dp.message(Command("delete_store"))
 async def delete_store_command(message: types.Message):
     if message.from_user.id not in BOSS_IDS: return
@@ -991,7 +996,6 @@ async def delete_worker_command(message: types.Message):
         if not cur.fetchone():
             conn.close()
             return await message.answer("⚠️ Ishchi topilmadi.")
-        # Ketma-ket o'chirish (Cascading)
         cur.execute("DELETE FROM deletion_requests WHERE worker_id = %s", (wid,))
         cur.execute("DELETE FROM sales WHERE worker_id = %s", (wid,))
         cur.execute("DELETE FROM users WHERE user_id = %s", (wid,))
@@ -1000,7 +1004,6 @@ async def delete_worker_command(message: types.Message):
     except Exception as e: 
         await message.answer(f"❌ Xatolik: {e}")
 
-# ================= AI SAVDO (SANA BILAN) =================
 @dp.message(F.text == "✍️ Savdo qo'shish")
 async def trade_init(message: types.Message, state: FSMContext):
     uid = message.from_user.id
@@ -1069,12 +1072,12 @@ async def ai_handle_chat(message: types.Message, state: FSMContext):
         params_today = (today_str,) + w_params
         params_all = w_params
         conn = get_db(); cur = dict_cursor(conn)
-        cur.execute(f"SELECT SUM(total)-SUM(cash) FROM sales WHERE 1=1 {w_cond}", params_all)
-        total_debt = cur.fetchone()[0] or 0
-        cur.execute(f"SELECT SUM(cash) FROM sales WHERE date LIKE %s {w_cond}", params_today)
-        today_cash = cur.fetchone()[0] or 0
+        cur.execute(f"SELECT COALESCE(SUM(total)-SUM(cash),0) FROM sales WHERE 1=1 {w_cond}", params_all)
+        total_debt = cur.fetchone()[0]
+        cur.execute(f"SELECT COALESCE(SUM(cash),0) FROM sales WHERE date LIKE %s {w_cond}", params_today)
+        today_cash = cur.fetchone()[0]
         cur.execute(f"SELECT COUNT(id) FROM sales WHERE date LIKE %s {w_cond}", params_today)
-        today_sales = cur.fetchone()[0] or 0
+        today_sales = cur.fetchone()[0]
         date_match = re.search(r'(\d{1,2})[-./](\d{1,2})', message.text)
         extra_context = ""
         if date_match:
@@ -1143,11 +1146,10 @@ async def worker_info(message: types.Message, state: FSMContext):
     cur.execute("SELECT name, user_id FROM users WHERE name = %s", (message.text,))
     w = cur.fetchone()
     if w:
-        cur.execute("SELECT SUM(total), COUNT(id) FROM sales WHERE worker_id = %s", (w['user_id'],))
+        cur.execute("SELECT COALESCE(SUM(total),0), COUNT(id) FROM sales WHERE worker_id = %s", (w['user_id'],))
         r = cur.fetchone(); conn.close()
         await message.answer(f"👤 {w['name']}\n📊 Jami savdo: {fmt(r[0])}\n🧾 Savdolar soni: {r[1] or 0}", reply_markup=get_back_kb())
 
-# ================= ORQAGA TUGMASI =================
 @dp.callback_query(F.data == "back_main")
 async def back_main(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -1173,7 +1175,6 @@ async def back_main(callback: CallbackQuery, state: FSMContext):
         kb = get_boss_menu() if uid in BOSS_IDS else get_worker_menu()
         await callback.message.answer(text, reply_markup=kb)
 
-# ================= ASOSIY QISM =================
 async def main():
     init_db()
     print("✅ Bot ishga tushdi 🚀")
