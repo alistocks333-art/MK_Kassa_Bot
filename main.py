@@ -103,13 +103,12 @@ def init_db():
 def get_db():
     DATABASE_URL = os.getenv('DATABASE_URL')
     if not DATABASE_URL:
-        raise Exception("DATABASE_URL topilmadi! Railway'da PostgreSQL qo'shilganini tekshiring.")
+        raise Exception("DATABASE_URL topilmadi!")
     
-    # SSL bilan ulanish (Railway uchun majburiy)
+    # Railway PostgreSQL uchun to'g'ri ulanish
     conn = psycopg2.connect(
         DATABASE_URL,
-        sslmode='require',
-        sslrootcert=None
+        sslmode='require'
     )
     conn.row_factory = psycopg2.extras.RealDictRow
     return conn
