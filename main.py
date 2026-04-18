@@ -107,10 +107,19 @@ class AppStates(StatesGroup):
     add_worker_id = State()
     add_worker_name = State()
 
-# ================= BAZA =================
+# ================= BAZA (BIGINT bilan) =================
 def init_db():
     conn = get_db()
     cur = conn.cursor()
+    # Eski INTEGER larni BIGINT ga o'zgartirish (xatolik chiqmasligi uchun)
+    try:
+        cur.execute("ALTER TABLE users ALTER COLUMN user_id TYPE BIGINT")
+        cur.execute("ALTER TABLE sales ALTER COLUMN worker_id TYPE BIGINT")
+        cur.execute("ALTER TABLE deletion_requests ALTER COLUMN worker_id TYPE BIGINT")
+        conn.commit()
+    except:
+        pass
+    
     cur.execute('''CREATE TABLE IF NOT EXISTS users (
         user_id BIGINT PRIMARY KEY, name TEXT, role TEXT DEFAULT 'worker', active INTEGER DEFAULT 1)''')
     cur.execute('''CREATE TABLE IF NOT EXISTS sales (
@@ -302,33 +311,424 @@ async def process_fire_worker(callback: CallbackQuery):
     await callback.message.edit_text(f"✅ {w['name']} {'🚫 Bloklandi' if new_status==0 else '✅ Faollashtirildi'}.")
     await fire_worker_inline(callback.message)
 
-@dp.message(F.text == "🤖 AI Analitika")
-async def boss_ai_analytics(message: types.Message):
-    if message.from_user.id not in BOSS_IDS: return
-    if not OPENAI_API_KEY: return await message.answer("⚠️ OpenAI API kalit kiritilmagan!")
-    conn = get_db(); cur = dict_cursor(conn)
-    cur.execute("SELECT COUNT(id), COALESCE(SUM(total),0), COALESCE(SUM(cash),0), COALESCE(SUM(total)-SUM(cash),0) FROM sales")
-    g = cur.fetchone()
-    cur.execute("""SELECT worker_name, COALESCE(SUM(total)-SUM(cash),0) as d 
-                   FROM sales GROUP BY worker_name 
-                   HAVING COALESCE(SUM(total)-SUM(cash),0) > 0 
-                   ORDER BY d DESC LIMIT 3""")
-    debtors = cur.fetchall()
-    cur.execute("SELECT normalized_store, COALESCE(SUM(total),0) as t FROM sales GROUP BY normalized_store ORDER BY t DESC LIMIT 3")
-    top_stores = cur.fetchall()
-    conn.close()
-    context = (f"📊 BAZA HOLATI:\n"
-               f"• Jami operatsiyalar: {g[0]} ta\n"
-               f"• Umumiy savdo: {fmt(g[1])}, Yig'ilgan: {fmt(g[2])}, Qarz: {fmt(g[3])}\n"
-               f"• Eng ko'p qarzdorlar: {', '.join([f'{r[0]}({fmt(r[1])})' for r in debtors]) or 'Yoq'}\n"
-               f"• TOP do'konlar: {', '.join([f'{r[0]}({fmt(r[1])})' for r in top_stores]) or 'Yoq'}")
+# ================= AI YORDAM (TAYYOR SAVOLLAR BILAN) =================
+
+def get_ai_questions_keyboard(is_boss=True):
+    """AI uchun savollar klaviaturasi"""
+    if is_boss:
+        # Boss uchun savollar
+        questions = [
+            ["📊 Bugungi kassa qancha?", "💰 Bu oy qancha savdo?"],
+            ["🏆 Eng yaxshi ishchi kim?", "💸 Eng ko'p qarzidor do'kon?"],
+            ["⏰ Ishlamaydigan do'konlar?", "📉 Qaysi ishchi eng ko'p qarz?"],
+            ["📅 Oylik hisobot", "📈 Umumiy statistika"],
+            ["⬅️ Orqaga"]
+        ]
+    else:
+        # Ishchi uchun savollar
+        questions = [
+            ["📊 Bugun qancha savdo?", "💰 Bu oy qancha yig'dim?"],
+            ["💳 Qarzi bor do'konlarim?", "🏆 Eng yaxshi do'konim?"],
+            ["📅 Oylik hisobotim", "📈 Umumiy statistikam"],
+            ["⬅️ Orqaga"]
+        ]
+    
+    keyboard = []
+    for i, row in enumerate(questions):
+        keyboard.append([
+            InlineKeyboardButton(text=q, callback_data=f"ai_q_{i}_{is_boss}")
+            for q in row
+        ])
+    
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+@dp.message(F.text == "🤖 AI Yordam")
+async def ai_help_start(message: types.Message, state: FSMContext):
+    """AI yordam boshlash - tayyor savollar bilan"""
+    await state.clear()
+    uid = message.from_user.id
+    is_boss = uid in BOSS_IDS
+    
+    # Klaviaturani yaratish
+    kb = get_ai_questions_keyboard(is_boss)
+    
+    if is_boss:
+        text = (
+            "🤖 **AI Yordamchi - Boss Paneli**\n\n"
+            "📊 **Tezkor savollar** (birini bosing):\n\n"
+            "Yoki o'z savolingizni yozing. "
+            "Masalan: _Qaysi do'kon 3 oydan beri ishlamayapti?_"
+        )
+    else:
+        text = (
+            "🤖 **AI Yordamchi**\n\n"
+            "📊 **Tezkor savollar** (birini bosing):\n\n"
+            "Yoki o'z savolingizni yozing."
+        )
+    
+    await message.answer(text, reply_markup=kb, parse_mode="Markdown")
+    await state.set_state(AppStates.ai_chat)
+
+@dp.callback_query(F.data.startswith("ai_q_"))
+async def handle_ai_question(callback: CallbackQuery, state: FSMContext):
+    """Tayyor savollarga javob berish"""
+    await callback.answer()
+    
+    # Callback datani parse qilish
+    parts = callback.data.split("_")
+    question_index = int(parts[2])
+    is_boss = parts[3] == "True"
+    
+    # Savollarni ro'yxati
+    if is_boss:
+        questions = [
+            "Bugungi kassa qancha?",
+            "Bu oy qancha savdo?",
+            "Eng yaxshi ishchi kim?",
+            "Eng ko'p qarzidor do'kon?",
+            "Ishlamaydigan do'konlar?",
+            "Qaysi ishchi eng ko'p qarz?",
+            "Oylik hisobot",
+            "Umumiy statistika"
+        ]
+    else:
+        questions = [
+            "Bugun qancha savdo?",
+            "Bu oy qancha yig'dim?",
+            "Qarzi bor do'konlarim?",
+            "Eng yaxshi do'konim?",
+            "Oylik hisobotim",
+            "Umumiy statistikam"
+        ]
+    
+    if question_index < len(questions):
+        question = questions[question_index]
+        await process_ai_question(callback.message, question, state)
+
+@dp.message(AppStates.ai_chat)
+async def ai_handle_chat(message: types.Message, state: FSMContext):
+    """AI orqali savollarga javob berish (matnli savollar)"""
+    uid = message.from_user.id
+    user_question = message.text.strip()
+    
+    # Orqaga tugmasi
+    if user_question == "⬅️ Orqaga":
+        await state.clear()
+        return await start_cmd(message, state)
+    
+    await process_ai_question(message, user_question, state)
+
+async def process_ai_question(message: types.Message, question: str, state: FSMContext):
+    """AI savolni qayta ishlash"""
+    uid = message.from_user.id
+    is_boss = uid in BOSS_IDS
+    
+    msg = await message.answer("🔍 Ma'lumotlar tahlil qilinmoqda...")
+    
     try:
-        res = client.chat.completions.create(model="gpt-4o-mini", messages=[
-            {"role": "system", "content": f"Siz MK Kassa boti boshqaruvchi AI tahlilchisisiz. {context}. Qisqa tahlil bering."},
-            {"role": "user", "content": "Hozirgi holatni tahlil qiling"}])
-        await message.answer(f"🤖 AI Tahlil:\n{res.choices[0].message.content}")
+        conn = get_db(); cur = dict_cursor(conn)
+        
+        # Bugungi sana
+        today = date.today().strftime("%d.%m.%Y")
+        today_pattern = f"{today}%"
+        
+        # Joriy oy
+        current_month = datetime.now().strftime("%m.%Y")
+        month_pattern = f"%{current_month}%"
+        
+        # Umumiy ma'lumotlarni olish
+        if is_boss:
+            w_cond, w_params = "", ()
+        else:
+            w_cond, w_params = "WHERE worker_id = %s", (uid,)
+        
+        # Savol turini aniqlash va javob berish
+        q_lower = question.lower()
+        
+        # 1. BUGUNGI KASSA
+        if "bugungi kassa" in q_lower or "bugun qancha savdo" in q_lower:
+            cur.execute(f"""
+                SELECT 
+                    COUNT(id) as count,
+                    COALESCE(SUM(cash),0) as cash,
+                    COALESCE(SUM(total),0) as total
+                FROM sales
+                WHERE date LIKE %s {w_cond}
+            """, (today_pattern,) + w_params)
+            result = cur.fetchone()
+            
+            answer = (
+                f"📅 **Bugungi natijalar ({today})**\n\n"
+                f"💵 Kassa: {fmt(result['cash'])}\n"
+                f"💰 Savdo hajmi: {fmt(result['total'])}\n"
+                f"📝 Savdolar soni: {result['count']} ta"
+            )
+        
+        # 2. BU OY SAVDO
+        elif "bu oy" in q_lower or "oylik" in q_lower:
+            cur.execute(f"""
+                SELECT 
+                    COUNT(id) as count,
+                    COALESCE(SUM(cash),0) as cash,
+                    COALESCE(SUM(total),0) as total
+                FROM sales
+                WHERE date LIKE %s {w_cond}
+            """, (month_pattern,) + w_params)
+            result = cur.fetchone()
+            
+            answer = (
+                f"📅 **Bu oy ({current_month})**\n\n"
+                f"💵 Yig'ilgan: {fmt(result['cash'])}\n"
+                f"💰 Savdo: {fmt(result['total'])}\n"
+                f"📝 Savdolar: {result['count']} ta"
+            )
+        
+        # 3. ENG YAXSHI ISHCHI
+        elif "eng yaxshi ishchi" in q_lower or "eng ko'p savdo" in q_lower:
+            cur.execute(f"""
+                SELECT u.name,
+                       COALESCE(SUM(s.total),0) as total_sales,
+                       COALESCE(SUM(s.cash),0) as cash
+                FROM sales s JOIN users u ON s.worker_id = u.user_id
+                GROUP BY u.user_id, u.name
+                ORDER BY total_sales DESC LIMIT 1
+            """)
+            result = cur.fetchone()
+            
+            if result:
+                answer = (
+                    f"🏆 **Eng yaxshi ishchi**\n\n"
+                    f"👤 Ism: {result['name']}\n"
+                    f"💰 Savdo: {fmt(result['total_sales'])}\n"
+                    f"💵 Naqt: {fmt(result['cash'])}"
+                )
+            else:
+                answer = "📊 Hozircha ma'lumot yo'q."
+        
+        # 4. ENG KO'P QARZIDOR DO'KON
+        elif "qarzidor do'kon" in q_lower or "ko'p qarz" in q_lower:
+            cur.execute("""
+                SELECT normalized_store,
+                       COALESCE(SUM(total),0) as total_sales,
+                       COALESCE(SUM(cash),0) as cash,
+                       COALESCE(SUM(total)-SUM(cash),0) as debt
+                FROM sales
+                WHERE normalized_store IS NOT NULL
+                GROUP BY normalized_store
+                HAVING COALESCE(SUM(total)-SUM(cash),0) > 0
+                ORDER BY debt DESC LIMIT 1
+            """)
+            result = cur.fetchone()
+            
+            if result:
+                answer = (
+                    f"💳 **Eng ko'p qarzidor do'kon**\n\n"
+                    f"🏪 Do'kon: {result['normalized_store']}\n"
+                    f"💰 Savdo: {fmt(result['total_sales'])}\n"
+                    f"💵 Yig'ilgan: {fmt(result['cash'])}\n"
+                    f"📉 **Qarz: {fmt(result['debt'])}**"
+                )
+            else:
+                answer = "✅ Hech qanday qarz yo'q!"
+        
+        # 5. ISHLAMAYDIGAN DO'KONLAR
+        elif "ishlamay" in q_lower or "faol emas" in q_lower:
+            cur.execute("""
+                SELECT normalized_store, 
+                       MAX(date) as last_sale,
+                       COUNT(id) as total_sales
+                FROM sales
+                WHERE normalized_store IS NOT NULL
+                GROUP BY normalized_store
+                HAVING MAX(date::date) < CURRENT_DATE - INTERVAL '30 days'
+                ORDER BY last_sale ASC LIMIT 5
+            """)
+            results = cur.fetchall()
+            
+            if results:
+                answer = "⏰ **30+ kundan beri ishlamaydigan do'konlar:**\n\n"
+                for i, r in enumerate(results, 1):
+                    # Sana formatini to'g'rilash
+                    last_date = r['last_sale']
+                    if isinstance(last_date, str):
+                        try:
+                            dt = datetime.strptime(last_date, "%d.%m.%Y")
+                            days = (datetime.now() - dt).days
+                        except:
+                            days = "?"
+                    else:
+                        days = "?"
+                    
+                    answer += f"{i}. 🏪 **{r['normalized_store']}**\n"
+                    answer += f"   Oxirgi savdo: {last_date} ({days} kun oldin)\n"
+                    answer += f"   Jami savdolar: {r['total_sales']} ta\n\n"
+            else:
+                answer = "✅ Barcha do'konlar faol!"
+        
+        # 6. ENG KO'P QARZ YIG'GAN ISHCHI
+        elif "qarz yig" in q_lower or "ishchi qarz" in q_lower:
+            cur.execute("""
+                SELECT u.name,
+                       COALESCE(SUM(s.total)-SUM(s.cash),0) as total_debt,
+                       COUNT(s.id) as sales_count
+                FROM sales s JOIN users u ON s.worker_id = u.user_id
+                GROUP BY u.user_id, u.name
+                HAVING COALESCE(SUM(s.total)-SUM(s.cash),0) > 0
+                ORDER BY total_debt DESC LIMIT 3
+            """)
+            results = cur.fetchall()
+            
+            if results:
+                answer = "💰 **Eng ko'p qarz yig'gan ishchilar:**\n\n"
+                for i, r in enumerate(results, 1):
+                    answer += f"{i}. 👤 **{r['name']}**\n"
+                    answer += f"   Qarz: {fmt(r['total_debt'])}\n"
+                    answer += f"   Savdolar: {r['sales_count']} ta\n\n"
+            else:
+                answer = "✅ Hech kimda qarz yo'q!"
+        
+        # 7. QARZI BOR DO'KONLAR (ISHCHI UCHUN)
+        elif "qarzi bor do'kon" in q_lower:
+            cur.execute(f"""
+                SELECT normalized_store,
+                       COALESCE(SUM(total),0) as total,
+                       COALESCE(SUM(cash),0) as cash,
+                       COALESCE(SUM(total)-SUM(cash),0) as debt
+                FROM sales
+                WHERE worker_id = %s AND normalized_store IS NOT NULL
+                GROUP BY normalized_store
+                HAVING COALESCE(SUM(total)-SUM(cash),0) > 0
+                ORDER BY debt DESC
+            """, (uid,))
+            results = cur.fetchall()
+            
+            if results:
+                answer = "💳 **Sizning qarzi bor do'konlaringiz:**\n\n"
+                total_debt = sum(r['debt'] for r in results)
+                for i, r in enumerate(results, 1):
+                    answer += f"{i}. 🏪 **{r['normalized_store']}** - {fmt(r['debt'])}\n"
+                answer += f"\n💰 **Jami qarz: {fmt(total_debt)}**"
+            else:
+                answer = "✅ Sizda qarzi bor do'konlar yo'q!"
+        
+        # 8. UMUMIY STATISTIKA
+        elif "statistika" in q_lower or "umumiy" in q_lower:
+            cur.execute(f"""
+                SELECT 
+                    COUNT(DISTINCT worker_id) as workers,
+                    COUNT(DISTINCT normalized_store) as stores,
+                    COUNT(id) as sales,
+                    COALESCE(SUM(total),0) as revenue,
+                    COALESCE(SUM(cash),0) as cash,
+                    COALESCE(SUM(total)-SUM(cash),0) as debt
+                FROM sales
+                {w_cond}
+            """, w_params)
+            result = cur.fetchone()
+            
+            if is_boss:
+                answer = (
+                    f"📊 **UMUMIY STATISTIKA**\n\n"
+                    f"👥 Ishchilar: {result['workers']} ta\n"
+                    f"🏪 Do'konlar: {result['stores']} ta\n"
+                    f"📝 Savdolar: {result['sales']} ta\n"
+                    f"💰 Savdo hajmi: {fmt(result['revenue'])}\n"
+                    f"💵 Yig'ilgan: {fmt(result['cash'])}\n"
+                    f"📉 Qarz: {fmt(result['debt'])}"
+                )
+            else:
+                answer = (
+                    f"📊 **SIZNING STATISTIKANGIZ**\n\n"
+                    f"🏪 Do'konlar: {result['stores']} ta\n"
+                    f"📝 Savdolar: {result['sales']} ta\n"
+                    f"💰 Savdo: {fmt(result['revenue'])}\n"
+                    f"💵 Yig'ilgan: {fmt(result['cash'])}\n"
+                    f"📉 Qarz: {fmt(result['debt'])}"
+                )
+        
+        # 9. ENG YAXSHI DO'KON
+        elif "eng yaxshi do'kon" in q_lower:
+            cur.execute(f"""
+                SELECT normalized_store,
+                       COALESCE(SUM(total),0) as total_sales,
+                       COALESCE(SUM(cash),0) as cash
+                FROM sales
+                WHERE normalized_store IS NOT NULL {w_cond.replace('WHERE', 'AND', 1) if w_cond else ''}
+                GROUP BY normalized_store
+                ORDER BY total_sales DESC LIMIT 1
+            """, w_params)
+            result = cur.fetchone()
+            
+            if result and result['normalized_store']:
+                answer = (
+                    f"🏆 **Eng yaxshi do'kon**\n\n"
+                    f"🏪 Do'kon: {result['normalized_store']}\n"
+                    f"💰 Savdo: {fmt(result['total_sales'])}\n"
+                    f"💵 Naqt: {fmt(result['cash'])}"
+                )
+            else:
+                answer = "📊 Hozircha ma'lumot yo'q."
+        
+        # 10. OYLIK HISOBOT
+        elif "hisobot" in q_lower:
+            cur.execute(f"""
+                SELECT 
+                    COUNT(id) as sales,
+                    COALESCE(SUM(total),0) as revenue,
+                    COALESCE(SUM(cash),0) as cash,
+                    COALESCE(SUM(total)-SUM(cash),0) as debt
+                FROM sales
+                WHERE date LIKE %s {w_cond}
+            """, (month_pattern,) + w_params)
+            result = cur.fetchone()
+            
+            answer = (
+                f"📅 **Oylik hisobot ({current_month})**\n\n"
+                f"📝 Savdolar: {result['sales']} ta\n"
+                f"💰 Savdo hajmi: {fmt(result['revenue'])}\n"
+                f"💵 Yig'ilgan: {fmt(result['cash'])}\n"
+                f"📉 Qarz: {fmt(result['debt'])}"
+            )
+        
+        # 11. STANDARD JAVOB (AI orqali)
+        else:
+            # Agar savol yuqoridagilardan biri bo'lmasa, AI dan foydalanamiz
+            cur.execute(f"""
+                SELECT 
+                    COUNT(id) as total_sales,
+                    COALESCE(SUM(total),0) as revenue,
+                    COALESCE(SUM(cash),0) as cash,
+                    COALESCE(SUM(total)-SUM(cash),0) as debt
+                FROM sales
+                {w_cond}
+            """, w_params)
+            stats = cur.fetchone()
+            
+            context = f"""Jami savdolar: {stats['total_sales']}
+Umumiy savdo: {fmt(stats['revenue'])}
+Yig'ilgan: {fmt(stats['cash'])}
+Qarz: {fmt(stats['debt'])}"""
+            
+            res = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": f"Siz MK Kassa boti yordamchisisiz. Quyidagi ma'lumotlar asosida foydalanuvchi savoliga javob bering:\n\n{context}"},
+                    {"role": "user", "content": question}
+                ]
+            )
+            answer = res.choices[0].message.content
+        
+        conn.close()
+        
+        # Javobni yuborish
+        await msg.edit_text(answer, parse_mode="Markdown")
+        
+        # Klaviaturani qaytarish
+        kb = get_ai_questions_keyboard(is_boss)
+        await message.answer("❓ Boshqa savol bering:", reply_markup=kb)
+        
     except Exception as e:
-        await message.answer(f"❌ AI xato: {e}")
+        await msg.edit_text(f"❌ Xatolik: {e}")
 
 @dp.message(F.text == "📅 Oylik arxiv")
 async def boss_monthly_archive(message: types.Message):
@@ -1037,50 +1437,14 @@ Qoidalar:
     await state.clear()
 
 @dp.message(F.text == "🤖 AI Yordam")
-async def ai_help_start(message: types.Message, state: FSMContext):
-    uid = message.from_user.id
-    if uid in BOSS_IDS: return
-    await state.clear()
-    await message.answer("🤖 AI yordamchi tayyor. Misol: `5-aprelda qanaqa savdo bo'lgan?` yoki `Jami qancha naqt yig'dim?`", reply_markup=get_back_kb())
-    await state.set_state(AppStates.ai_chat)
+async def ai_help_start_old(message: types.Message, state: FSMContext):
+    # Bu eski funksiya, yangi funksiya tepada bor.
+    pass
 
 @dp.message(AppStates.ai_chat)
 async def ai_handle_chat(message: types.Message, state: FSMContext):
-    uid = message.from_user.id
-    if uid in BOSS_IDS: return
-    if message.text == "⬅️ Orqaga": await state.clear(); return await start_cmd(message, state)
-    msg = await message.answer("🔍 Ma'lumotlar tahlil qilinmoqda...")
-    try:
-        w_cond, w_params = get_worker_filter(uid)
-        today_str = date.today().strftime("%d.%m.%Y") + "%"
-        params_today = (today_str,) + w_params
-        params_all = w_params
-        conn = get_db(); cur = dict_cursor(conn)
-        cur.execute(f"SELECT COALESCE(SUM(total)-SUM(cash),0) FROM sales WHERE 1=1 {w_cond}", params_all)
-        total_debt = cur.fetchone()[0]
-        cur.execute(f"SELECT COALESCE(SUM(cash),0) FROM sales WHERE date LIKE %s {w_cond}", params_today)
-        today_cash = cur.fetchone()[0]
-        cur.execute(f"SELECT COUNT(id) FROM sales WHERE date LIKE %s {w_cond}", params_today)
-        today_sales = cur.fetchone()[0]
-        date_match = re.search(r'(\d{1,2})[-./](\d{1,2})', message.text)
-        extra_context = ""
-        if date_match:
-            d, m = date_match.groups()
-            q_date = f"{d.zfill(2)}.{m.zfill(2)}.{datetime.now().year}"
-            cur.execute(f"SELECT store_name, total, cash, txn_type FROM sales WHERE date LIKE %s {w_cond}", (f"{q_date}%",) + w_params)
-            res = cur.fetchall()
-            extra_context = f"\n📅 {q_date} dagi harakatlar:\n" + "\n".join([f"- {r['store_name']}: {r['txn_type']} | Savdo:{fmt(r['total'])} | Naqt:{fmt(r['cash'])}" for r in res]) if res else f"\n📅 {q_date}: Ma'lumot yo'q."
-        conn.close()
-        context = (f"📊 UMUMIY HOLAT:\n"
-                   f"• Jami qarz: {fmt(total_debt)}\n"
-                   f"• Bugungi tushum: {fmt(today_cash)}\n"
-                   f"• Bugungi savdolar soni: {today_sales} ta"
-                   f"{extra_context}")
-        res = client.chat.completions.create(model="gpt-4o-mini", messages=[
-            {"role": "system", "content": f"Siz MK Kassa boti yordamchisisiz. Foydalanuvchi savoliga **faqat** quyidagi aniq ma'lumotlar asosida javob bering. O'ylab topmang. Qisqa va aniq javob bering:\n{context}"},
-            {"role": "user", "content": message.text}])
-        await msg.edit_text(f"🤖 {res.choices[0].message.content}")
-    except Exception as e: await msg.edit_text(f"❌ AI xato: {e}")
+    # Bu eski funksiya, yangi funksiya tepada bor.
+    pass
 
 @dp.callback_query(F.data.startswith("cancel_req_"))
 async def request_cancel(callback: CallbackQuery):
