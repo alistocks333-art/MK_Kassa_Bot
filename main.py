@@ -312,32 +312,35 @@ async def process_fire_worker(callback: CallbackQuery):
     await callback.message.edit_text(f"✅ {w['name']} {'🚫 Bloklandi' if new_status==0 else '✅ Faollashtirildi'}.")
     await fire_worker_inline(callback.message)
 
-# ================= AI YORDAM (TAYYOR SAVOLLAR BILAN) =================
+# ================= AI YORDAM (TO'LIQ TUZATILGAN) =================
 
 def get_ai_questions_keyboard(is_boss=True):
     """AI uchun savollar klaviaturasi"""
     if is_boss:
+        # Boss uchun savollar
         questions = [
             ["📊 Bugungi kassa qancha?", "💰 Bu oy qancha savdo?"],
             ["🏆 Eng yaxshi ishchi kim?", "💸 Eng ko'p qarzidor do'kon?"],
             ["⏰ Ishlamaydigan do'konlar?", "📉 Qaysi ishchi eng ko'p qarz?"],
-            ["📅 Oylik hisobot", "📈 Umumiy statistika"],
-            ["⬅️ Orqaga"]
+            ["📅 Oylik hisobot", "📈 Umumiy statistika"]
         ]
     else:
+        # Ishchi uchun savollar
         questions = [
             ["📊 Bugun qancha savdo?", "💰 Bu oy qancha yig'dim?"],
             ["💳 Qarzi bor do'konlarim?", "🏆 Eng yaxshi do'konim?"],
-            ["📅 Oylik hisobotim", "📈 Umumiy statistikam"],
-            ["⬅️ Orqaga"]
+            ["📅 Oylik hisobotim", "📈 Umumiy statistikam"]
         ]
     
     keyboard = []
-    for i, row in enumerate(questions):
+    for row in questions:
         keyboard.append([
-            InlineKeyboardButton(text=q, callback_data=f"ai_q_{i}_{is_boss}")
+            InlineKeyboardButton(text=q, callback_data=f"ai_q_{q.replace(' ', '_')}")
             for q in row
         ])
+    
+    # Orqaga tugmasini qo'shamiz
+    keyboard.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="ai_back")])
     
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -348,6 +351,7 @@ async def ai_help_start(message: types.Message, state: FSMContext):
     uid = message.from_user.id
     is_boss = uid in BOSS_IDS
     
+    # Klaviaturani yaratish
     kb = get_ai_questions_keyboard(is_boss)
     
     if is_boss:
@@ -370,44 +374,30 @@ async def ai_help_start(message: types.Message, state: FSMContext):
 async def handle_ai_question(callback: CallbackQuery, state: FSMContext):
     """Tayyor savollarga javob berish"""
     await callback.answer()
-    parts = callback.data.split("_")
-    question_index = int(parts[2])
-    is_boss = parts[3] == "True"
     
-    if is_boss:
-        questions = [
-            "Bugungi kassa qancha?",
-            "Bu oy qancha savdo?",
-            "Eng yaxshi ishchi kim?",
-            "Eng ko'p qarzidor do'kon?",
-            "Ishlamaydigan do'konlar?",
-            "Qaysi ishchi eng ko'p qarz?",
-            "Oylik hisobot",
-            "Umumiy statistika"
-        ]
+    # Savolni callback data dan olish
+    question = callback.data.replace("ai_q_", "").replace("_", " ")
+    
+    # Javobni jarayon qilish
+    await process_ai_question(callback.message, question, state)
+
+@dp.callback_query(F.data == "ai_back")
+async def ai_back_callback(callback: CallbackQuery, state: FSMContext):
+    """AI dan orqaga qaytish"""
+    await callback.answer()
+    await state.clear()
+    
+    uid = callback.from_user.id
+    if uid in BOSS_IDS:
+        await callback.message.edit_text("Xush kelibsiz, Boss 👑", reply_markup=get_boss_menu())
     else:
-        questions = [
-            "Bugun qancha savdo?",
-            "Bu oy qancha yig'dim?",
-            "Qarzi bor do'konlarim?",
-            "Eng yaxshi do'konim?",
-            "Oylik hisobotim",
-            "Umumiy statistikam"
-        ]
-    
-    if question_index < len(questions):
-        question = questions[question_index]
-        await process_ai_question(callback.message, question, state)
+        await callback.message.edit_text("⬅️ Bosh menyu", reply_markup=get_worker_menu())
 
 @dp.message(AppStates.ai_chat)
 async def ai_handle_chat(message: types.Message, state: FSMContext):
     """AI orqali savollarga javob berish (matnli savollar)"""
     uid = message.from_user.id
     user_question = message.text.strip()
-    
-    if user_question == "⬅️ Orqaga":
-        await state.clear()
-        return await start_cmd(message, state)
     
     await process_ai_question(message, user_question, state)
 
@@ -420,67 +410,123 @@ async def process_ai_question(message: types.Message, question: str, state: FSMC
     
     try:
         conn = get_db(); cur = dict_cursor(conn)
+        
+        # Bugungi sana
         today = date.today().strftime("%d.%m.%Y")
         today_pattern = f"{today}%"
+        
+        # Joriy oy
         current_month = datetime.now().strftime("%m.%Y")
         month_pattern = f"%{current_month}%"
         
+        # Umumiy ma'lumotlarni olish
         if is_boss:
             w_cond, w_params = "", ()
         else:
             w_cond, w_params = "WHERE worker_id = %s", (uid,)
         
+        # Savol turini aniqlash va javob berish
         q_lower = question.lower()
         answer = ""
-
+        
         # 1. BUGUNGI KASSA
         if "bugungi kassa" in q_lower or "bugun qancha savdo" in q_lower:
-            cur.execute(f"""
-                SELECT COUNT(id) as count, COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total),0) as total
-                FROM sales WHERE date LIKE %s {w_cond}
-            """, (today_pattern,) + w_params)
+            if is_boss:
+                cur.execute(f"""
+                    SELECT COUNT(id) as count, COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total),0) as total
+                    FROM sales WHERE date LIKE %s
+                """, (today_pattern,))
+            else:
+                cur.execute(f"""
+                    SELECT COUNT(id) as count, COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total),0) as total
+                    FROM sales WHERE date LIKE %s AND worker_id = %s
+                """, (today_pattern, uid))
             result = cur.fetchone()
-            answer = f"📅 **Bugungi natijalar ({today})**\n\n💵 Kassa: {fmt(result['cash'])}\n💰 Savdo hajmi: {fmt(result['total'])}\n📝 Savdolar soni: {result['count']} ta"
+            
+            answer = (
+                f"📅 **Bugungi natijalar ({today})**\n\n"
+                f"💵 Kassa: {fmt(result['cash'])}\n"
+                f"💰 Savdo hajmi: {fmt(result['total'])}\n"
+                f"📝 Savdolar soni: {result['count']} ta"
+            )
         
         # 2. BU OY SAVDO
-        elif "bu oy" in q_lower or "oylik" in q_lower:
-            cur.execute(f"""
-                SELECT COUNT(id) as count, COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total),0) as total
-                FROM sales WHERE date LIKE %s {w_cond}
-            """, (month_pattern,) + w_params)
+        elif "bu oy" in q_lower or "oy qancha" in q_lower:
+            if is_boss:
+                cur.execute(f"""
+                    SELECT COUNT(id) as count, COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total),0) as total
+                    FROM sales WHERE date LIKE %s
+                """, (month_pattern,))
+            else:
+                cur.execute(f"""
+                    SELECT COUNT(id) as count, COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total),0) as total
+                    FROM sales WHERE date LIKE %s AND worker_id = %s
+                """, (month_pattern, uid))
             result = cur.fetchone()
-            answer = f"📅 **Bu oy ({current_month})**\n\n💵 Yig'ilgan: {fmt(result['cash'])}\n💰 Savdo: {fmt(result['total'])}\n📝 Savdolar: {result['count']} ta"
+            
+            answer = (
+                f"📅 **Bu oy ({current_month})**\n\n"
+                f"💵 Yig'ilgan: {fmt(result['cash'])}\n"
+                f"💰 Savdo: {fmt(result['total'])}\n"
+                f"📝 Savdolar: {result['count']} ta"
+            )
         
-        # 3. ENG YAXSHI ISHCHI
-        elif "eng yaxshi ishchi" in q_lower or "eng ko'p savdo" in q_lower:
-            cur.execute(f"""
+        # 3. ENG YAXSHI ISHCHI (faqat boss uchun)
+        elif "eng yaxshi ishchi" in q_lower and is_boss:
+            cur.execute("""
                 SELECT u.name, COALESCE(SUM(s.total),0) as total_sales, COALESCE(SUM(s.cash),0) as cash
                 FROM sales s JOIN users u ON s.worker_id = u.user_id
-                GROUP BY u.user_id, u.name ORDER BY total_sales DESC LIMIT 1
+                GROUP BY u.user_id, u.name
+                ORDER BY total_sales DESC LIMIT 1
             """)
             result = cur.fetchone()
+            
             if result:
-                answer = f"🏆 **Eng yaxshi ishchi**\n\n👤 Ism: {result['name']}\n💰 Savdo: {fmt(result['total_sales'])}\n💵 Naqt: {fmt(result['cash'])}"
+                answer = (
+                    f"🏆 **Eng yaxshi ishchi**\n\n"
+                    f"👤 Ism: {result['name']}\n"
+                    f"💰 Savdo: {fmt(result['total_sales'])}\n"
+                    f"💵 Naqt: {fmt(result['cash'])}"
+                )
             else:
                 answer = "📊 Hozircha ma'lumot yo'q."
         
         # 4. ENG KO'P QARZIDOR DO'KON
         elif "qarzidor do'kon" in q_lower or "ko'p qarz" in q_lower:
-            cur.execute("""
-                SELECT normalized_store, COALESCE(SUM(total),0) as total_sales, COALESCE(SUM(cash),0) as cash,
-                       COALESCE(SUM(total)-SUM(cash),0) as debt
-                FROM sales WHERE normalized_store IS NOT NULL
-                GROUP BY normalized_store HAVING COALESCE(SUM(total)-SUM(cash),0) > 0
-                ORDER BY debt DESC LIMIT 1
-            """)
+            if is_boss:
+                cur.execute("""
+                    SELECT normalized_store, COALESCE(SUM(total),0) as total_sales, 
+                           COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total)-SUM(cash),0) as debt
+                    FROM sales WHERE normalized_store IS NOT NULL
+                    GROUP BY normalized_store
+                    HAVING COALESCE(SUM(total)-SUM(cash),0) > 0
+                    ORDER BY debt DESC LIMIT 1
+                """)
+            else:
+                cur.execute("""
+                    SELECT normalized_store, COALESCE(SUM(total),0) as total_sales, 
+                           COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total)-SUM(cash),0) as debt
+                    FROM sales WHERE worker_id = %s AND normalized_store IS NOT NULL
+                    GROUP BY normalized_store
+                    HAVING COALESCE(SUM(total)-SUM(cash),0) > 0
+                    ORDER BY debt DESC LIMIT 1
+                """, (uid,))
+            
             result = cur.fetchone()
+            
             if result:
-                answer = f"💳 **Eng ko'p qarzidor do'kon**\n\n🏪 Do'kon: {result['normalized_store']}\n💰 Savdo: {fmt(result['total_sales'])}\n💵 Yig'ilgan: {fmt(result['cash'])}\n📉 **Qarz: {fmt(result['debt'])}**"
+                answer = (
+                    f"💳 **Eng ko'p qarzidor do'kon**\n\n"
+                    f"🏪 Do'kon: {result['normalized_store']}\n"
+                    f"💰 Savdo: {fmt(result['total_sales'])}\n"
+                    f"💵 Yig'ilgan: {fmt(result['cash'])}\n"
+                    f"📉 **Qarz: {fmt(result['debt'])}**"
+                )
             else:
                 answer = "✅ Hech qanday qarz yo'q!"
         
-        # 5. ISHLAMAYDIGAN DO'KONLAR
-        elif "ishlamay" in q_lower or "faol emas" in q_lower:
+        # 5. ISHLAMAYDIGAN DO'KONLAR (faqat boss uchun)
+        elif "ishlamay" in q_lower and is_boss:
             cur.execute("""
                 SELECT normalized_store, MAX(date) as last_sale, COUNT(id) as total_sales
                 FROM sales WHERE normalized_store IS NOT NULL
@@ -489,6 +535,7 @@ async def process_ai_question(message: types.Message, question: str, state: FSMC
                 ORDER BY last_sale ASC LIMIT 5
             """)
             results = cur.fetchall()
+            
             if results:
                 answer = "⏰ **30+ kundan beri ishlamaydigan do'konlar:**\n\n"
                 for i, r in enumerate(results, 1):
@@ -496,38 +543,27 @@ async def process_ai_question(message: types.Message, question: str, state: FSMC
                     try:
                         dt = datetime.strptime(str(last_date).split()[0], "%d.%m.%Y")
                         days = (datetime.now() - dt).days
-                    except: days = "?"
-                    answer += f"{i}. 🏪 **{r['normalized_store']}**\n   Oxirgi savdo: {last_date} ({days} kun oldin)\n   Jami savdolar: {r['total_sales']} ta\n\n"
+                    except:
+                        days = "?"
+                    
+                    answer += f"{i}. 🏪 **{r['normalized_store']}**\n"
+                    answer += f"   Oxirgi savdo: {last_date} ({days} kun oldin)\n"
+                    answer += f"   Jami savdolar: {r['total_sales']} ta\n\n"
             else:
                 answer = "✅ Barcha do'konlar faol!"
         
-        # 6. ENG KO'P QARZ YIG'GAN ISHCHI
-        elif "qarz yig" in q_lower or "ishchi qarz" in q_lower:
+        # 6. QARZI BOR DO'KONLAR (ishchi uchun)
+        elif "qarzi bor do'kon" in q_lower and not is_boss:
             cur.execute("""
-                SELECT u.name, COALESCE(SUM(s.total)-SUM(s.cash),0) as total_debt, COUNT(s.id) as sales_count
-                FROM sales s JOIN users u ON s.worker_id = u.user_id
-                GROUP BY u.user_id, u.name
-                HAVING COALESCE(SUM(s.total)-SUM(s.cash),0) > 0
-                ORDER BY total_debt DESC LIMIT 3
-            """)
-            results = cur.fetchall()
-            if results:
-                answer = "💰 **Eng ko'p qarz yig'gan ishchilar:**\n\n"
-                for i, r in enumerate(results, 1):
-                    answer += f"{i}. 👤 **{r['name']}**\n   Qarz: {fmt(r['total_debt'])}\n   Savdolar: {r['sales_count']} ta\n\n"
-            else:
-                answer = "✅ Hech kimda qarz yo'q!"
-        
-        # 7. QARZI BOR DO'KONLAR
-        elif "qarzi bor do'kon" in q_lower:
-            cur.execute(f"""
-                SELECT normalized_store, COALESCE(SUM(total),0) as total, COALESCE(SUM(cash),0) as cash,
-                       COALESCE(SUM(total)-SUM(cash),0) as debt
+                SELECT normalized_store, COALESCE(SUM(total),0) as total, 
+                       COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total)-SUM(cash),0) as debt
                 FROM sales WHERE worker_id = %s AND normalized_store IS NOT NULL
-                GROUP BY normalized_store HAVING COALESCE(SUM(total)-SUM(cash),0) > 0
+                GROUP BY normalized_store
+                HAVING COALESCE(SUM(total)-SUM(cash),0) > 0
                 ORDER BY debt DESC
             """, (uid,))
             results = cur.fetchall()
+            
             if results:
                 answer = "💳 **Sizning qarzi bor do'konlaringiz:**\n\n"
                 total_debt = sum(r['debt'] for r in results)
@@ -537,65 +573,130 @@ async def process_ai_question(message: types.Message, question: str, state: FSMC
             else:
                 answer = "✅ Sizda qarzi bor do'konlar yo'q!"
         
-        # 8. UMUMIY STATISTIKA
+        # 7. UMUMIY STATISTIKA
         elif "statistika" in q_lower or "umumiy" in q_lower:
-            cur.execute(f"""
-                SELECT COUNT(DISTINCT worker_id) as workers, COUNT(DISTINCT normalized_store) as stores,
-                       COUNT(id) as sales, COALESCE(SUM(total),0) as revenue, COALESCE(SUM(cash),0) as cash,
-                       COALESCE(SUM(total)-SUM(cash),0) as debt
-                FROM sales {w_cond}
-            """, w_params)
-            result = cur.fetchone()
             if is_boss:
-                answer = f"📊 **UMUMIY STATISTIKA**\n\n👥 Ishchilar: {result['workers']} ta\n🏪 Do'konlar: {result['stores']} ta\n📝 Savdolar: {result['sales']} ta\n💰 Savdo hajmi: {fmt(result['revenue'])}\n💵 Yig'ilgan: {fmt(result['cash'])}\n📉 Qarz: {fmt(result['debt'])}"
+                cur.execute("""
+                    SELECT COUNT(DISTINCT worker_id) as workers, COUNT(DISTINCT normalized_store) as stores,
+                           COUNT(id) as sales, COALESCE(SUM(total),0) as revenue, 
+                           COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total)-SUM(cash),0) as debt
+                    FROM sales
+                """)
+                result = cur.fetchone()
+                
+                answer = (
+                    f"📊 **UMUMIY STATISTIKA**\n\n"
+                    f"👥 Ishchilar: {result['workers']} ta\n"
+                    f"🏪 Do'konlar: {result['stores']} ta\n"
+                    f"📝 Savdolar: {result['sales']} ta\n"
+                    f"💰 Savdo hajmi: {fmt(result['revenue'])}\n"
+                    f"💵 Yig'ilgan: {fmt(result['cash'])}\n"
+                    f"📉 Qarz: {fmt(result['debt'])}"
+                )
             else:
-                answer = f"📊 **SIZNING STATISTIKANGIZ**\n\n🏪 Do'konlar: {result['stores']} ta\n📝 Savdolar: {result['sales']} ta\n💰 Savdo: {fmt(result['revenue'])}\n💵 Yig'ilgan: {fmt(result['cash'])}\n📉 Qarz: {fmt(result['debt'])}"
+                cur.execute("""
+                    SELECT COUNT(DISTINCT normalized_store) as stores, COUNT(id) as sales,
+                           COALESCE(SUM(total),0) as revenue, COALESCE(SUM(cash),0) as cash,
+                           COALESCE(SUM(total)-SUM(cash),0) as debt
+                    FROM sales WHERE worker_id = %s
+                """, (uid,))
+                result = cur.fetchone()
+                
+                answer = (
+                    f"📊 **SIZNING STATISTIKANGIZ**\n\n"
+                    f"🏪 Do'konlar: {result['stores']} ta\n"
+                    f"📝 Savdolar: {result['sales']} ta\n"
+                    f"💰 Savdo: {fmt(result['revenue'])}\n"
+                    f"💵 Yig'ilgan: {fmt(result['cash'])}\n"
+                    f"📉 Qarz: {fmt(result['debt'])}"
+                )
+        
+        # 8. OYLIK HISOBOT
+        elif "hisobot" in q_lower:
+            if is_boss:
+                cur.execute(f"""
+                    SELECT COUNT(id) as sales, COALESCE(SUM(total),0) as revenue, 
+                           COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total)-SUM(cash),0) as debt
+                    FROM sales WHERE date LIKE %s
+                """, (month_pattern,))
+            else:
+                cur.execute(f"""
+                    SELECT COUNT(id) as sales, COALESCE(SUM(total),0) as revenue, 
+                           COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total)-SUM(cash),0) as debt
+                    FROM sales WHERE date LIKE %s AND worker_id = %s
+                """, (month_pattern, uid))
+            
+            result = cur.fetchone()
+            
+            answer = (
+                f"📅 **Oylik hisobot ({current_month})**\n\n"
+                f"📝 Savdolar: {result['sales']} ta\n"
+                f"💰 Savdo hajmi: {fmt(result['revenue'])}\n"
+                f"💵 Yig'ilgan: {fmt(result['cash'])}\n"
+                f"📉 Qarz: {fmt(result['debt'])}"
+            )
         
         # 9. ENG YAXSHI DO'KON
         elif "eng yaxshi do'kon" in q_lower:
-            cur.execute(f"""
-                SELECT normalized_store, COALESCE(SUM(total),0) as total_sales, COALESCE(SUM(cash),0) as cash
-                FROM sales WHERE normalized_store IS NOT NULL {w_cond.replace('WHERE', 'AND', 1) if w_cond else ''}
-                GROUP BY normalized_store ORDER BY total_sales DESC LIMIT 1
-            """, w_params)
+            if is_boss:
+                cur.execute("""
+                    SELECT normalized_store, COALESCE(SUM(total),0) as total_sales, COALESCE(SUM(cash),0) as cash
+                    FROM sales WHERE normalized_store IS NOT NULL
+                    GROUP BY normalized_store
+                    ORDER BY total_sales DESC LIMIT 1
+                """)
+            else:
+                cur.execute("""
+                    SELECT normalized_store, COALESCE(SUM(total),0) as total_sales, COALESCE(SUM(cash),0) as cash
+                    FROM sales WHERE worker_id = %s AND normalized_store IS NOT NULL
+                    GROUP BY normalized_store
+                    ORDER BY total_sales DESC LIMIT 1
+                """, (uid,))
+            
             result = cur.fetchone()
+            
             if result and result['normalized_store']:
-                answer = f"🏆 **Eng yaxshi do'kon**\n\n🏪 Do'kon: {result['normalized_store']}\n💰 Savdo: {fmt(result['total_sales'])}\n💵 Naqt: {fmt(result['cash'])}"
+                answer = (
+                    f"🏆 **Eng yaxshi do'kon**\n\n"
+                    f"🏪 Do'kon: {result['normalized_store']}\n"
+                    f"💰 Savdo: {fmt(result['total_sales'])}\n"
+                    f"💵 Naqt: {fmt(result['cash'])}"
+                )
             else:
                 answer = "📊 Hozircha ma'lumot yo'q."
         
-        # 10. OYLIK HISOBOT
-        elif "hisobot" in q_lower:
-            cur.execute(f"""
-                SELECT COUNT(id) as sales, COALESCE(SUM(total),0) as revenue, COALESCE(SUM(cash),0) as cash,
-                       COALESCE(SUM(total)-SUM(cash),0) as debt
-                FROM sales WHERE date LIKE %s {w_cond}
-            """, (month_pattern,) + w_params)
-            result = cur.fetchone()
-            answer = f"📅 **Oylik hisobot ({current_month})**\n\n📝 Savdolar: {result['sales']} ta\n💰 Savdo hajmi: {fmt(result['revenue'])}\n💵 Yig'ilgan: {fmt(result['cash'])}\n📉 Qarz: {fmt(result['debt'])}"
+        # 10. QAYSI ISHCHI ENG KO'P QARZ (faqat boss uchun)
+        elif "ishchi eng ko'p qarz" in q_lower and is_boss:
+            cur.execute("""
+                SELECT u.name, COALESCE(SUM(s.total)-SUM(s.cash),0) as total_debt, COUNT(s.id) as sales_count
+                FROM sales s JOIN users u ON s.worker_id = u.user_id
+                GROUP BY u.user_id, u.name
+                HAVING COALESCE(SUM(s.total)-SUM(s.cash),0) > 0
+                ORDER BY total_debt DESC LIMIT 3
+            """)
+            results = cur.fetchall()
+            
+            if results:
+                answer = "💰 **Eng ko'p qarz yig'gan ishchilar:**\n\n"
+                for i, r in enumerate(results, 1):
+                    answer += f"{i}. 👤 **{r['name']}**\n"
+                    answer += f"   Qarz: {fmt(r['total_debt'])}\n"
+                    answer += f"   Savdolar: {r['sales_count']} ta\n\n"
+            else:
+                answer = "✅ Hech kimda qarz yo'q!"
         
-        # 11. STANDARD JAVOB
+        # Agar savol tanilmagan bo'lsa
         else:
-            cur.execute(f"""
-                SELECT COUNT(id) as total_sales, COALESCE(SUM(total),0) as revenue, COALESCE(SUM(cash),0) as cash,
-                       COALESCE(SUM(total)-SUM(cash),0) as debt
-                FROM sales {w_cond}
-            """, w_params)
-            stats = cur.fetchone()
-            context = f"""Jami savdolar: {stats['total_sales']}\nUmumiy savdo: {fmt(stats['revenue'])}\nYig'ilgan: {fmt(stats['cash'])}\nQarz: {fmt(stats['debt'])}"""
-            res = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": f"Siz MK Kassa boti yordamchisisiz. Quyidagi ma'lumotlar asosida foydalanuvchi savoliga javob bering:\n\n{context}"},
-                    {"role": "user", "content": question}
-                ]
-            )
-            answer = res.choices[0].message.content
+            answer = "❓ Bu savolga javob topilmadi. Boshqa savol bering yoki quyidagilardan birini tanlang."
         
         conn.close()
+        
+        # Javobni yuborish
         await msg.edit_text(answer, parse_mode="Markdown")
+        
+        # Klaviaturani qaytarish
         kb = get_ai_questions_keyboard(is_boss)
-        await message.answer("❓ Boshqa savol bering:", reply_markup=kb)
+        await message.answer("❓ **Boshqa savol bering:**", reply_markup=kb, parse_mode="Markdown")
         
     except Exception as e:
         await msg.edit_text(f"❌ Xatolik: {e}")
