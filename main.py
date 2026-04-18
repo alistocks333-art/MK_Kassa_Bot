@@ -52,6 +52,7 @@ def extract_date(text):
     return None, text
 
 def get_worker_filter(uid):
+    """Ishchi uchun WHERE sharti va parametrlarni qaytaradi"""
     if uid in BOSS_IDS: return "", ()
     return "AND worker_id = %s", (uid,)
 
@@ -167,92 +168,84 @@ def get_boss_menu():
 @dp.message(Command("start"))
 @dp.message(F.text == "⬅️ Orqaga")
 async def start_cmd(message: types.Message, state: FSMContext):
-    try:
-        await state.clear()
-        init_db()
-        uid = message.from_user.id
-        conn = get_db(); cur = dict_cursor(conn)
-        cur.execute("SELECT name, active FROM users WHERE user_id = %s", (uid,))
-        user = cur.fetchone(); conn.close()
+    await state.clear()
+    init_db()
+    uid = message.from_user.id
+    conn = get_db(); cur = dict_cursor(conn)
+    cur.execute("SELECT name, active FROM users WHERE user_id = %s", (uid,))
+    user = cur.fetchone(); conn.close()
 
-        if uid in BOSS_IDS:
-            return await message.answer("Xush kelibsiz, Boss 👑", reply_markup=get_boss_menu())
-        if user and user['active'] == 0:
-            return await message.answer("🚫 Hisobingiz bloklan. Boss bilan bog'laning.")
+    if uid in BOSS_IDS:
+        return await message.answer("Xush kelibsiz, Boss 👑", reply_markup=get_boss_menu())
+    if user and user['active'] == 0:
+        return await message.answer("🚫 Hisobingiz bloklan. Boss bilan bog'laning.")
 
-        kb = get_worker_menu() if user else ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⏳ Kutilmoqda...")]], resize_keyboard=True)
-        text = f"Assalomu alaykum, {user['name'] or 'Ishchi'}!" if user else f"Siz ro'yxatda yo'qsiz.\n🆔 ID: {uid}"
-        await message.answer(text, reply_markup=kb)
-    except Exception as e:
-        print(f"Start error: {e}")
-        await message.answer("⚠️ Tizimda vaqtincha muammo. Qaytadan urinib ko'ring.")
+    kb = get_worker_menu() if user else ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⏳ Kutilmoqda...")]], resize_keyboard=True)
+    text = f"Assalomu alaykum, {user['name'] or 'Ishchi'}!" if user else f"Siz ro'yxatda yo'qsiz.\n🆔 ID: {uid}"
+    await message.answer(text, reply_markup=kb)
 
 # ================= BOSS FUNKSIYALARI =================
 @dp.message(F.text == "💰 Kassa (Live)")
 async def boss_kassa_live(message: types.Message):
-    try:
-        if message.from_user.id not in BOSS_IDS: return
-        today = date.today().strftime("%d.%m.%Y")
-        conn = get_db(); cur = dict_cursor(conn)
+    if message.from_user.id not in BOSS_IDS: return
+    today = date.today().strftime("%d.%m.%Y")
+    conn = get_db(); cur = dict_cursor(conn)
+    
+    cur.execute("""SELECT u.name as worker_name, s.store_name, COALESCE(SUM(s.cash),0) as cash 
+                   FROM sales s JOIN users u ON s.worker_id = u.user_id
+                   WHERE s.date LIKE %s AND s.cash > 0 
+                   GROUP BY u.name, s.store_name 
+                   ORDER BY u.name, s.store_name""", (f"{today}%",))
+    rows = cur.fetchall()
+    
+    cur.execute("""SELECT u.name as worker_name, COALESCE(SUM(s.cash),0) as total 
+                   FROM sales s JOIN users u ON s.worker_id = u.user_id
+                   WHERE s.date LIKE %s AND s.cash > 0 
+                   GROUP BY u.name""", (f"{today}%",))
+    worker_totals = {r['worker_name']: r['total'] for r in cur.fetchall()}
+    
+    cur.execute("""SELECT COALESCE(SUM(s.cash),0) as grand_total
+                   FROM sales s
+                   WHERE s.date LIKE %s AND s.cash > 0""", (f"{today}%",))
+    grand_total = cur.fetchone()['grand_total']
+    conn.close()
+    
+    if not rows: 
+        return await message.answer("📅 Bugun hech qanday naqt tushumi yo'q.")
+    
+    out = f"💰 Kassa (Live) - {today}\n\n"
+    current_worker = ""
+    
+    for r in rows:
+        if r['worker_name'] != current_worker:
+            if current_worker:
+                out += f"\n✅ **Jami: {fmt(worker_totals.get(current_worker, 0))}**\n\n"
+            current_worker = r['worker_name']
+            out += f"👤 **{current_worker}**:\n"
         
-        cur.execute("""SELECT u.name as worker_name, s.store_name, COALESCE(SUM(s.cash),0) as cash 
-                       FROM sales s JOIN users u ON s.worker_id = u.user_id
-                       WHERE s.date LIKE %s AND s.cash > 0 
-                       GROUP BY u.name, s.store_name 
-                       ORDER BY u.name, s.store_name""", (f"{today}%",))
-        rows = cur.fetchall()
-        
-        cur.execute("""SELECT u.name as worker_name, COALESCE(SUM(s.cash),0) as total 
-                       FROM sales s JOIN users u ON s.worker_id = u.user_id
-                       WHERE s.date LIKE %s AND s.cash > 0 
-                       GROUP BY u.name""", (f"{today}%",))
-        worker_totals = {r['worker_name']: r['total'] for r in cur.fetchall()}
-        
-        cur.execute("""SELECT COALESCE(SUM(s.cash),0) as grand_total
-                       FROM sales s
-                       WHERE s.date LIKE %s AND s.cash > 0""", (f"{today}%",))
-        grand_total = cur.fetchone()['grand_total']
-        conn.close()
-        
-        if not rows: 
-            return await message.answer("📅 Bugun hech qanday naqt tushumi yo'q.")
-        
-        out = f"💰 Kassa (Live) - {today}\n\n"
-        current_worker = ""
-        
-        for r in rows:
-            if r['worker_name'] != current_worker:
-                if current_worker:
-                    out += f"\n✅ **Jami: {fmt(worker_totals.get(current_worker, 0))}**\n\n"
-                current_worker = r['worker_name']
-                out += f"👤 **{current_worker}**:\n"
-            out += f"  🏪 {r['store_name']} - {fmt(r['cash'])}\n"
-        
-        if current_worker:
-            out += f"\n✅ **Jami: {fmt(worker_totals.get(current_worker, 0))}**\n"
-        
-        out += f"\n{'='*30}\n💵 **UMUMIY JAMI: {fmt(grand_total)}**\n👥 Ishchilar soni: {len(worker_totals)} ta"
-        await message.answer(out, parse_mode="Markdown")
-    except Exception as e:
-        print(f"Kassa Live error: {e}")
-        await message.answer("❌ Ma'lumot yuklanmadi.")
+        out += f"  🏪 {r['store_name']} - {fmt(r['cash'])}\n"
+    
+    if current_worker:
+        out += f"\n✅ **Jami: {fmt(worker_totals.get(current_worker, 0))}**\n"
+    
+    out += f"\n{'='*30}\n"
+    out += f"💵 **UMUMIY JAMI: {fmt(grand_total)}**\n"
+    out += f"👥 Ishchilar soni: {len(worker_totals)} ta"
+    
+    await message.answer(out, parse_mode="Markdown")
 
 @dp.message(F.text == "👥 Ishchilar")
 async def boss_workers_list(message: types.Message, state: FSMContext):
-    try:
-        if message.from_user.id not in BOSS_IDS: return
-        await state.clear()
-        conn = get_db(); cur = dict_cursor(conn)
-        cur.execute("SELECT name, user_id, active FROM users WHERE role = 'worker'")
-        workers = cur.fetchall(); conn.close()
-        kb = [[KeyboardButton(text=f"{'✅' if w['active'] else '🚫'} {w['name']}")] for w in workers]
-        kb.append([KeyboardButton(text="➕ Yangi ishchi qo'shish")])
-        kb.append([KeyboardButton(text="🚫 Ishdan bo'shatish (Inline)")])
-        kb.append([KeyboardButton(text="⬅️ Orqaga")])
-        await message.answer("👥 Ishchilar ro'yxati (✅Faol / 🚫Blok):", reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
-    except Exception as e:
-        print(f"Workers list error: {e}")
-        await message.answer("❌ Ro'yxat yuklanmadi.")
+    if message.from_user.id not in BOSS_IDS: return
+    await state.clear()
+    conn = get_db(); cur = dict_cursor(conn)
+    cur.execute("SELECT name, user_id, active FROM users WHERE role = 'worker'")
+    workers = cur.fetchall(); conn.close()
+    kb = [[KeyboardButton(text=f"{'✅' if w['active'] else '🚫'} {w['name']}")] for w in workers]
+    kb.append([KeyboardButton(text="➕ Yangi ishchi qo'shish")])
+    kb.append([KeyboardButton(text="🚫 Ishdan bo'shatish (Inline)")])
+    kb.append([KeyboardButton(text="⬅️ Orqaga")])
+    await message.answer("👥 Ishchilar ro'yxati (✅Faol / 🚫Blok):", reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
 
 @dp.message(F.text == "➕ Yangi ishchi qo'shish")
 async def add_worker_start(message: types.Message, state: FSMContext):
@@ -286,49 +279,40 @@ async def add_worker_get_name(message: types.Message, state: FSMContext):
         await state.clear()
         await boss_workers_list(message, state)
     except Exception as e:
-        print(f"Add worker error: {e}")
-        await message.answer(f"❌ Xatolik: {str(e)[:100]}")
+        await message.answer(f"❌ Xatolik: {e}")
         await state.clear()
 
 @dp.message(F.text == "🚫 Ishdan bo'shatish (Inline)")
 async def fire_worker_inline(message: types.Message):
-    try:
-        if message.from_user.id not in BOSS_IDS: return
-        conn = get_db(); cur = dict_cursor(conn)
-        cur.execute("SELECT name, user_id, active FROM users WHERE role = 'worker'")
-        workers = cur.fetchall(); conn.close()
-        if not workers: return await message.answer("🚫 Hozircha ishchilar yo'q.")
-        kb = InlineKeyboardMarkup(inline_keyboard=[])
-        row = []
-        for w in workers:
-            row.append(InlineKeyboardButton(text=f"{'✅' if w['active'] else '🚫'} {w['name']}", callback_data=f"fire_{w['user_id']}"))
-            if len(row) == 2: kb.inline_keyboard.append(row); row = []
-        if row: kb.inline_keyboard.append(row)
-        await message.answer("🚫 Ishchini tanlang (statusni o'zgartirish uchun):", reply_markup=kb)
-    except Exception as e:
-        print(f"Fire inline error: {e}")
-        await message.answer("❌ Yuklanmadi.")
+    if message.from_user.id not in BOSS_IDS: return
+    conn = get_db(); cur = dict_cursor(conn)
+    cur.execute("SELECT name, user_id, active FROM users WHERE role = 'worker'")
+    workers = cur.fetchall(); conn.close()
+    if not workers: return await message.answer("🚫 Hozircha ishchilar yo'q.")
+    kb = InlineKeyboardMarkup(inline_keyboard=[])
+    row = []
+    for w in workers:
+        row.append(InlineKeyboardButton(text=f"{'✅' if w['active'] else '🚫'} {w['name']}", callback_data=f"fire_{w['user_id']}"))
+        if len(row) == 2: kb.inline_keyboard.append(row); row = []
+    if row: kb.inline_keyboard.append(row)
+    await message.answer("🚫 Ishchini tanlang (statusni o'zgartirish uchun):", reply_markup=kb)
 
 @dp.callback_query(F.data.startswith("fire_"))
 async def process_fire_worker(callback: CallbackQuery):
-    try:
-        await callback.answer()
-        if callback.from_user.id not in BOSS_IDS: return
-        target_id = int(callback.data.replace("fire_", ""))
-        conn = get_db(); cur = dict_cursor(conn)
-        cur.execute("SELECT name, active FROM users WHERE user_id = %s", (target_id,))
-        w = cur.fetchone()
-        if not w: return await callback.answer("⚠️ Ishchi topilmadi!", show_alert=True)
-        new_status = 0 if w['active'] == 1 else 1
-        cur.execute("UPDATE users SET active = %s WHERE user_id = %s", (new_status, target_id))
-        conn.commit(); conn.close()
-        await callback.message.edit_text(f"✅ {w['name']} {'🚫 Bloklandi' if new_status==0 else '✅ Faollashtirildi'}.")
-        await fire_worker_inline(callback.message)
-    except Exception as e:
-        print(f"Fire worker error: {e}")
-        await callback.answer("❌ Xatolik", show_alert=True)
+    await callback.answer()
+    if callback.from_user.id not in BOSS_IDS: return
+    target_id = int(callback.data.replace("fire_", ""))
+    conn = get_db(); cur = dict_cursor(conn)
+    cur.execute("SELECT name, active FROM users WHERE user_id = %s", (target_id,))
+    w = cur.fetchone()
+    if not w: return await callback.answer("⚠️ Ishchi topilmadi!", show_alert=True)
+    new_status = 0 if w['active'] == 1 else 1
+    cur.execute("UPDATE users SET active = %s WHERE user_id = %s", (new_status, target_id))
+    conn.commit(); conn.close()
+    await callback.message.edit_text(f"✅ {w['name']} {'🚫 Bloklandi' if new_status==0 else '✅ Faollashtirildi'}.")
+    await fire_worker_inline(callback.message)
 
-# ================= AI YORDAM (TUZATILGAN) =================
+# ================= AI YORDAM =================
 def get_ai_questions_keyboard(is_boss=True):
     if is_boss:
         questions = [
@@ -357,64 +341,49 @@ def get_ai_questions_keyboard(is_boss=True):
 
 @dp.message(F.text == "🤖 AI Yordam")
 async def ai_help_start(message: types.Message, state: FSMContext):
-    try:
-        await state.clear()
-        uid = message.from_user.id
-        is_boss = uid in BOSS_IDS
-        kb = get_ai_questions_keyboard(is_boss)
-        text = "🤖 **AI Yordamchi**\n\n📊 Tezkor savollardan birini bosing yoki o'zingiz yozing."
-        await message.answer(text, reply_markup=kb, parse_mode="Markdown")
-        await state.set_state(AppStates.ai_chat)
-    except Exception as e:
-        print(f"AI start error: {e}")
-        await message.answer("❌ Yuklanmadi.")
+    await state.clear()
+    uid = message.from_user.id
+    is_boss = uid in BOSS_IDS
+    kb = get_ai_questions_keyboard(is_boss)
+    text = "🤖 **AI Yordamchi**\n\n📊 Tezkor savollardan birini bosing yoki o'zingiz yozing."
+    await message.answer(text, reply_markup=kb, parse_mode="Markdown")
+    await state.set_state(AppStates.ai_chat)
 
 @dp.callback_query(F.data.startswith("ai_q_"))
 async def handle_ai_question(callback: CallbackQuery, state: FSMContext):
-    try:
-        await callback.answer()
-        parts = callback.data.split("_")
-        row_idx, col_idx = int(parts[2]), int(parts[3])
-        uid = callback.from_user.id
-        is_boss = uid in BOSS_IDS
-        
-        if is_boss:
-            questions = [["Bugungi kassa qancha?", "Bu oy qancha savdo?"], ["Eng yaxshi ishchi kim?", "Eng ko'p qarzidor do'kon?"], ["Ishlamaydigan do'konlar?", "Qaysi ishchi eng ko'p qarz?"], ["Oylik hisobot", "Umumiy statistika"]]
-        else:
-            questions = [["Bugun qancha savdo?", "Bu oy qancha yig'dim?"], ["Qarzi bor do'konlarim?", "Eng yaxshi do'konim?"], ["O'tgan oy vs Bu oy", "Oylik hisobotim"], ["Umumiy statistikam"]]
-        
-        await process_ai_question(callback.message, questions[row_idx][col_idx], state, is_boss)
-    except Exception as e:
-        print(f"AI question error: {e}")
-        await callback.answer("❌ Xatolik", show_alert=True)
+    await callback.answer()
+    parts = callback.data.split("_")
+    row_idx, col_idx = int(parts[2]), int(parts[3])
+    uid = callback.from_user.id
+    is_boss = uid in BOSS_IDS
+    
+    if is_boss:
+        questions = [["Bugungi kassa qancha?", "Bu oy qancha savdo?"], ["Eng yaxshi ishchi kim?", "Eng ko'p qarzidor do'kon?"], ["Ishlamaydigan do'konlar?", "Qaysi ishchi eng ko'p qarz?"], ["Oylik hisobot", "Umumiy statistika"]]
+    else:
+        questions = [["Bugun qancha savdo?", "Bu oy qancha yig'dim?"], ["Qarzi bor do'konlarim?", "Eng yaxshi do'konim?"], ["O'tgan oy vs Bu oy", "Oylik hisobotim"], ["Umumiy statistikam"]]
+    
+    await process_ai_question(callback.message, questions[row_idx][col_idx], state, is_boss)
 
 @dp.callback_query(F.data == "ai_back_main")
 async def ai_back_callback(callback: CallbackQuery, state: FSMContext):
-    try:
-        await callback.answer()
-        await state.clear()
-        uid = callback.from_user.id
-        # ✅ edit_text o'rniga answer ishlatildi (ReplyKeyboardMarkup uchun)
-        if uid in BOSS_IDS:
-            await callback.message.answer("Xush kelibsiz, Boss 👑", reply_markup=get_boss_menu())
-        else:
-            await callback.message.answer("⬅️ Bosh menyu", reply_markup=get_worker_menu())
-    except Exception as e:
-        print(f"AI back error: {e}")
+    await callback.answer()
+    await state.clear()
+    uid = callback.from_user.id
+    if uid in BOSS_IDS:
+        await callback.message.answer("Xush kelibsiz, Boss 👑", reply_markup=get_boss_menu())
+    else:
+        await callback.message.answer("⬅️ Bosh menyu", reply_markup=get_worker_menu())
 
 @dp.message(AppStates.ai_chat)
 async def ai_handle_chat(message: types.Message, state: FSMContext):
-    try:
-        uid = message.from_user.id
-        await process_ai_question(message, message.text.strip(), state, uid in BOSS_IDS)
-    except Exception as e:
-        print(f"AI chat error: {e}")
-        await message.answer("❌ Xatolik yuz berdi.")
+    uid = message.from_user.id
+    await process_ai_question(message, message.text.strip(), state, uid in BOSS_IDS)
 
 async def process_ai_question(message: types.Message, question: str, state: FSMContext, is_boss: bool):
+    uid = message.from_user.id
+    msg = await message.answer("🔍 Ma'lumotlar tahlil qilinmoqda...")
+    
     try:
-        uid = message.from_user.id
-        msg = await message.answer("🔍 Ma'lumotlar tahlil qilinmoqda...")
         conn = get_db(); cur = dict_cursor(conn)
         today = date.today().strftime("%d.%m.%Y")
         current_month = datetime.now().strftime("%m.%Y")
@@ -517,7 +486,7 @@ async def process_ai_question(message: types.Message, question: str, state: FSMC
         await msg.edit_text(answer, parse_mode="Markdown")
         await message.answer("❓ **Boshqa savol:**", reply_markup=get_ai_questions_keyboard(is_boss))
     except Exception as e:
-        print(f"Process AI error: {e}")
+        print(f"AI error: {e}")
         await msg.edit_text("❌ Ma'lumot yuklanmadi.")
 
 # ================= QOLGAN BOSS FUNKSIYALAR =================
