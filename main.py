@@ -145,6 +145,22 @@ def parse_db_date_to_date(text_value):
         return None
 
 
+def extract_month_keys(text_value):
+    if not text_value:
+        return set()
+    head = text_value[:10]
+    match = re.match(r"^(\d{2})\.(\d{2})\.(\d{2,4})$", head)
+    if not match:
+        return set()
+    _, month, year = match.groups()
+    keys = {f"{month}.{year}"}
+    if len(year) == 2:
+        keys.add(f"{month}.20{year}")
+    else:
+        keys.add(f"{month}.{year[-2:]}")
+    return keys
+
+
 async def notify_boss(worker_uid, store, total, cash, txn_type, date_str):
     try:
         worker_name = get_worker_name(worker_uid)
@@ -1063,18 +1079,17 @@ async def handle_monthly_cash(message: types.Message):
     if uid not in BOSS_IDS:
         conn = get_db()
         cur = dict_cursor(conn)
-        cur.execute(
-            """
-            SELECT SUBSTR(date, 1, 10) AS d, COALESCE(SUM(cash),0) AS cash
-            FROM sales
-            WHERE worker_id = %s AND date LIKE %s AND cash > 0
-            GROUP BY d
-            ORDER BY d DESC
-            """,
-            (uid, f"%{month}%"),
-        )
-        rows = cur.fetchall()
+        cur.execute("SELECT date, cash FROM sales WHERE worker_id = %s AND cash > 0 ORDER BY date DESC", (uid,))
+        raw_rows = cur.fetchall()
         conn.close()
+        grouped = {}
+        for row in raw_rows:
+            day = row["date"][:10]
+            if month not in extract_month_keys(row["date"]):
+                continue
+            grouped.setdefault(day, 0)
+            grouped[day] += row["cash"] or 0
+        rows = [{"d": d, "cash": grouped[d]} for d in sorted(grouped.keys(), reverse=True)]
         if not rows:
             return await message.answer(f"📅 {month}: Ma'lumot yo'q.")
         kb = InlineKeyboardMarkup(
@@ -1101,8 +1116,8 @@ async def mc_all_dates(callback: CallbackQuery):
     month = callback.data.replace("mc_all_", "")
     conn = get_db()
     cur = dict_cursor(conn)
-    cur.execute("SELECT DISTINCT SUBSTR(date, 1, 10) AS d FROM sales WHERE date LIKE %s ORDER BY d DESC", (f"%{month}%",))
-    dates = [r["d"] for r in cur.fetchall()]
+    cur.execute("SELECT date FROM sales ORDER BY date DESC")
+    dates = sorted({r["date"][:10] for r in cur.fetchall() if month in extract_month_keys(r["date"])}, reverse=True)
     conn.close()
     if not dates:
         return await callback.message.edit_text("📭 Yo'q.")
@@ -1192,8 +1207,9 @@ async def sel_worker_dates(callback: CallbackQuery):
         conn.close()
         return await callback.message.edit_text("⚠️ Ishchi topilmadi.")
 
-    cur.execute("SELECT DISTINCT SUBSTR(date, 1, 10) AS d FROM sales WHERE worker_id = %s ORDER BY d DESC", (uid,))
-    dates = [r["d"] for r in cur.fetchall()]
+    current_month = datetime.now().strftime("%m.%Y")
+    cur.execute("SELECT date FROM sales WHERE worker_id = %s ORDER BY date DESC", (uid,))
+    dates = sorted({r["date"][:10] for r in cur.fetchall() if current_month in extract_month_keys(r["date"])}, reverse=True)
     conn.close()
     if not dates:
         return await callback.message.edit_text("📭 Yo'q.")
@@ -1219,9 +1235,10 @@ async def day_worker_summary(callback: CallbackQuery):
     worker = cur.fetchone()
     cur.execute(
         """
-        SELECT store_name, COALESCE(SUM(cash),0) AS cash
+        SELECT store_name, COALESCE(SUM(total),0) AS total, COALESCE(SUM(cash),0) AS cash,
+               COALESCE(SUM(total)-SUM(cash),0) AS debt
         FROM sales
-        WHERE worker_id = %s AND date LIKE %s AND cash > 0
+        WHERE worker_id = %s AND date LIKE %s
         GROUP BY store_name
         ORDER BY store_name
         """,
@@ -1231,12 +1248,17 @@ async def day_worker_summary(callback: CallbackQuery):
     conn.close()
 
     worker_name = worker["name"] if worker else f"ID:{uid}"
-    out = f"💰 {worker_name} - {day}\n"
-    total = 0
+    out = f"👤 {worker_name} - {day}\n\n"
+    total_cash = 0
     for r in rows:
-        out += f"🏪 {r['store_name']} | 💵 {fmt(r['cash'])}\n"
-        total += r["cash"]
-    out += f"\n💰 Jami: {fmt(total)}"
+        out += (
+            f"🏪 Do'kon: {r['store_name']}\n"
+            f"💰 Savdo: {fmt(r['total'])}\n"
+            f"💵 Naqt: {fmt(r['cash'])}\n"
+            f"📉 Qarz: {fmt(r['debt'])}\n\n"
+        )
+        total_cash += r["cash"] or 0
+    out += f"💰 Jami naqt: {fmt(total_cash)}"
 
     await callback.message.edit_text(
         out,
@@ -1254,33 +1276,47 @@ async def calculate_salary(message: types.Message):
         cur = dict_cursor(conn)
         cur.execute("SELECT user_id, name FROM users WHERE role = 'worker' AND active = 1 ORDER BY name")
         workers = cur.fetchall()
-        out = f"💰 Maosh ({month}):\n\n"
+        out = f"💰 Oylik maosh hisoboti ({month}):\n\n"
         grand_total = 0
         for w in workers:
-            cur.execute(
-                "SELECT COALESCE(SUM(cash),0) AS total_cash FROM sales WHERE worker_id = %s AND date LIKE %s AND cash > 0",
-                (w["user_id"], f"%{month}%"),
-            )
-            total_cash = cur.fetchone()["total_cash"]
+            cur.execute("SELECT cash, date FROM sales WHERE worker_id = %s AND cash > 0", (w["user_id"],))
+            total_cash = 0
+            for row in cur.fetchall():
+                if month in extract_month_keys(row["date"]):
+                    total_cash += row["cash"] or 0
             percent = total_cash * 0.08
             fixa = 150 if 1500 <= total_cash < 2000 else (200 if 2000 <= total_cash < 3000 else (300 if total_cash >= 3000 else 0))
             salary = percent + fixa
             grand_total += salary
-            out += f"👥 {w['name']}\n💵 {fmt(total_cash)} | 📈 {fmt(percent)} | 🎁 {fmt(fixa)} | ✅ {fmt(salary)}\n\n"
-        out += f"💰 JAMI: {fmt(grand_total)}"
+            out += (
+                f"👥 {w['name']}\n"
+                f"📊 Yig'ilgan naqt: {fmt(total_cash)}\n"
+                f"📈 8% ulush: {fmt(percent)}\n"
+                f"🎁 Fiksa bonus: {fmt(fixa)}\n"
+                f"✅ Jami maosh: {fmt(salary)}\n\n"
+            )
+        out += f"💰 JAMI MAOSH XARAJATI: {fmt(grand_total)}"
         conn.close()
         return await message.answer(out)
 
-    w_cond, w_params = get_worker_filter(uid)
     conn = get_db()
     cur = dict_cursor(conn)
-    cur.execute("SELECT COALESCE(SUM(cash),0) AS total_cash FROM sales WHERE date LIKE %s AND cash > 0 " + w_cond, (f"%{month}%",) + w_params)
-    total_cash = cur.fetchone()["total_cash"]
+    cur.execute("SELECT cash, date FROM sales WHERE worker_id = %s AND cash > 0", (uid,))
+    total_cash = 0
+    for row in cur.fetchall():
+        if month in extract_month_keys(row["date"]):
+            total_cash += row["cash"] or 0
     conn.close()
 
     percent = total_cash * 0.08
     fixa = 150 if 1500 <= total_cash < 2000 else (200 if 2000 <= total_cash < 3000 else (300 if total_cash >= 3000 else 0))
-    await message.answer(f"💰 Maosh ({month}):\n💵 {fmt(total_cash)} | 📈 {fmt(percent)} | 🎁 {fmt(fixa)} | ✅ {fmt(percent + fixa)}")
+    await message.answer(
+        f"💰 Oylik maosh hisoboti ({month}):\n\n"
+        f"📊 Yig'ilgan naqt: {fmt(total_cash)}\n"
+        f"📈 8% ulush: {fmt(percent)}\n"
+        f"🎁 Fiksa bonus: {fmt(fixa)}\n"
+        f"✅ Jami maosh: {fmt(percent + fixa)}"
+    )
 
 
 # ================= ISHCHI =================
@@ -1635,11 +1671,20 @@ async def store_details(callback: CallbackQuery, state: FSMContext):
 
     total = res["total"]
     cash = res["cash"]
-    out = f"🏪 **{store.upper()}**\n💰 {fmt(total)} | 💵 {fmt(cash)} | 📉 {fmt(total - cash)}\n\n📜:\n"
+    out = (
+        f"🏪 **{store.upper()}** hisoboti:\n"
+        f"💰 Umumiy savdo: {fmt(total)}\n"
+        f"💵 Yig'ilgan: {fmt(cash)}\n"
+        f"📉 Qoldiq qarz: {fmt(total - cash)}\n\n"
+        f"📜 Harakatlar:\n"
+    )
     for h in hist:
-        symbol = "📦" if h["txn_type"] == "savdo" else ("💵" if h["txn_type"] == "naqt" else "🔄")
-        amount = h["cash"] if h["txn_type"] == "naqt" else abs(h["total"])
-        out += f"📅 {h['date']} | {symbol} {fmt(amount)}\n"
+        if h["txn_type"] == "savdo":
+            out += f"📅 {h['date']}\n💰 Savdo: {fmt(h['total'])}\n💵 Naqt: {fmt(h['cash'])}\n📉 Qarz: {fmt((h['total'] or 0) - (h['cash'] or 0))}\n\n"
+        elif h["txn_type"] == "naqt":
+            out += f"📅 {h['date']}\n💵 Naqt kiritildi: {fmt(h['cash'])}\n\n"
+        elif h["txn_type"] == "qaytarish":
+            out += f"📅 {h['date']}\n🔄 Qaytarish: {fmt(abs(h['total']))}\n\n"
 
     if from_boss_debt:
         back_row = [InlineKeyboardButton(text="⬅️ Qarzdorlar", callback_data=f"boss_debt_uid_{selected_worker_id}")]
@@ -1768,11 +1813,29 @@ async def handle_store_action(message: types.Message, state: FSMContext, t_type:
 
     await notify_boss(worker_id, store, amount if t_type != "qaytarish" else -amount, amount if t_type == "naqt" else 0, t_type, now_str)
 
-    txt = (
-        f"✅ {fmt(amount)} qabul qilindi! ({now_str.split()[0]})"
-        if t_type == "naqt"
-        else (f"✅ {fmt(amount)} qaytarildi!" if t_type == "qaytarish" else f"✅ {fmt(amount)} savdo qo'shildi!")
-    )
+    if t_type == "naqt":
+        txt = (
+            f"✅ Saqlandi!\n"
+            f"🏪 Do'kon: {store}\n"
+            f"💵 Naqt: {fmt(amount)}\n"
+            f"📅 Sana: {now_str.split()[0]}"
+        )
+    elif t_type == "qaytarish":
+        txt = (
+            f"✅ Saqlandi!\n"
+            f"🏪 Do'kon: {store}\n"
+            f"🔄 Qaytarish: {fmt(amount)}\n"
+            f"📅 Sana: {now_str.split()[0]}"
+        )
+    else:
+        txt = (
+            f"✅ Saqlandi!\n"
+            f"🏪 Do'kon: {store}\n"
+            f"💰 Savdo: {fmt(amount)}\n"
+            f"💵 Naqt: {fmt(0)}\n"
+            f"📉 Qarz: {fmt(amount)}\n"
+            f"📅 Sana: {now_str.split()[0]}"
+        )
     await message.answer(
         txt,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Bekor", callback_data=f"cancel_req_{sale_id}")]]),
@@ -1798,11 +1861,20 @@ async def send_store_details(message: types.Message, store: str, state: FSMConte
 
     total = res["total"]
     cash = res["cash"]
-    out = f"🏪 **{store.upper()}**\n💰 {fmt(total)} | 💵 {fmt(cash)} | 📉 {fmt(total - cash)}\n\n📜:\n"
+    out = (
+        f"🏪 **{store.upper()}** hisoboti:\n"
+        f"💰 Umumiy savdo: {fmt(total)}\n"
+        f"💵 Yig'ilgan: {fmt(cash)}\n"
+        f"📉 Qoldiq qarz: {fmt(total - cash)}\n\n"
+        f"📜 Harakatlar:\n"
+    )
     for h in hist:
-        symbol = "📦" if h["txn_type"] == "savdo" else ("💵" if h["txn_type"] == "naqt" else "🔄")
-        amount = h["cash"] if h["txn_type"] == "naqt" else abs(h["total"])
-        out += f"📅 {h['date']} | {symbol} {fmt(amount)}\n"
+        if h["txn_type"] == "savdo":
+            out += f"📅 {h['date']}\n💰 Savdo: {fmt(h['total'])}\n💵 Naqt: {fmt(h['cash'])}\n📉 Qarz: {fmt((h['total'] or 0) - (h['cash'] or 0))}\n\n"
+        elif h["txn_type"] == "naqt":
+            out += f"📅 {h['date']}\n💵 Naqt kiritildi: {fmt(h['cash'])}\n\n"
+        elif h["txn_type"] == "qaytarish":
+            out += f"📅 {h['date']}\n🔄 Qaytarish: {fmt(abs(h['total']))}\n\n"
 
     back_button = (
         InlineKeyboardButton(text="⬅️ Qarzdorlar", callback_data=f"boss_debt_uid_{uid}")
@@ -2007,7 +2079,12 @@ Qoidalar: 1. "naxt/naqt/pul" yonidagi raqam cash.
 
         await notify_boss(uid, store, total, cash, "savdo", now_str)
         await msg.edit_text(
-            f"✅ Saqlandi!\n🏪 {store}\n💰 {fmt(total)} | 💵 {fmt(cash)} | 📉 {fmt(debt)}\n📅 {date_str}",
+            f"✅ Saqlandi!\n"
+            f"🏪 Do'kon: {store}\n"
+            f"💰 Savdo: {fmt(total)}\n"
+            f"💵 Naqt: {fmt(cash)}\n"
+            f"📉 Qarz: {fmt(debt)}\n"
+            f"📅 Sana: {date_str}",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Bekor", callback_data=f"cancel_req_{sale_id}")]]),
         )
     except Exception as e:
