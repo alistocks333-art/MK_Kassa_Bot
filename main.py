@@ -107,11 +107,10 @@ class AppStates(StatesGroup):
     add_worker_id = State()
     add_worker_name = State()
 
-# ================= BAZA (BIGINT bilan) =================
+# ================= BAZA =================
 def init_db():
     conn = get_db()
     cur = conn.cursor()
-    # Eski INTEGER larni BIGINT ga o'zgartirish (xatolik chiqmasligi uchun)
     try:
         cur.execute("ALTER TABLE users ALTER COLUMN user_id TYPE BIGINT")
         cur.execute("ALTER TABLE sales ALTER COLUMN worker_id TYPE BIGINT")
@@ -155,7 +154,6 @@ def get_worker_menu():
     ], resize_keyboard=True)
 
 def get_boss_menu():
-    # ✅ TUZATILDI: "🤖 AI Analitika" -> "🤖 AI Yordam"
     return ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="💰 Kassa (Live)"), KeyboardButton(text="🤝 Qarzi borlar")],
         [KeyboardButton(text="👥 Ishchilar"), KeyboardButton(text="🤖 AI Yordam")],
@@ -312,10 +310,8 @@ async def process_fire_worker(callback: CallbackQuery):
     await callback.message.edit_text(f"✅ {w['name']} {'🚫 Bloklandi' if new_status==0 else '✅ Faollashtirildi'}.")
     await fire_worker_inline(callback.message)
 
-# ================= AI YORDAM (TO'LIQ TUZATILGAN) =================
-
+# ================= AI YORDAM (TUZATILGAN) =================
 def get_ai_questions_keyboard(is_boss=True):
-    """AI uchun savollar klaviaturasi"""
     if is_boss:
         questions = [
             ["📊 Bugungi kassa qancha?", "💰 Bu oy qancha savdo?"],
@@ -332,415 +328,169 @@ def get_ai_questions_keyboard(is_boss=True):
         ]
     
     keyboard = []
-    for i, row in enumerate(questions):  # ✅ i qo'shildi!
+    # ✅ i o'zgaruvchisi aniq belgilandi
+    for i, row in enumerate(questions):
         keyboard.append([
             InlineKeyboardButton(text=q, callback_data=f"ai_q_{i}_{j}")
             for j, q in enumerate(row)
         ])
     
     keyboard.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="ai_back_main")])
-    
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 @dp.message(F.text == "🤖 AI Yordam")
 async def ai_help_start(message: types.Message, state: FSMContext):
-    """AI yordam boshlash"""
     await state.clear()
     uid = message.from_user.id
     is_boss = uid in BOSS_IDS
-    
     kb = get_ai_questions_keyboard(is_boss)
     
-    if is_boss:
-        text = (
-            "🤖 **AI Yordamchi - Boss Paneli**\n\n"
-            "📊 **Tezkor savollar** (birini bosing):\n\n"
-            "Yoki **istalgan savolingizni yozing** - AI javob beradi! 💬"
-        )
-    else:
-        text = (
-            "🤖 **AI Yordamchi**\n\n"
-            "📊 **Tezkor savollar** (birini bosing):\n\n"
-            "Yoki **istalgan savolingizni yozing** - AI javob beradi! 💬"
-        )
-    
+    text = "🤖 **AI Yordamchi**\n\n📊 Tezkor savollardan birini bosing yoki o'zingiz yozing."
     await message.answer(text, reply_markup=kb, parse_mode="Markdown")
     await state.set_state(AppStates.ai_chat)
 
 @dp.callback_query(F.data.startswith("ai_q_"))
 async def handle_ai_question(callback: CallbackQuery, state: FSMContext):
-    """Tayyor savollarga javob berish"""
     await callback.answer()
-    
     parts = callback.data.split("_")
-    row_idx = int(parts[2])
-    col_idx = int(parts[3])
-    
+    row_idx, col_idx = int(parts[2]), int(parts[3])
     uid = callback.from_user.id
     is_boss = uid in BOSS_IDS
     
-    # Savollar ro'yxati
     if is_boss:
-        questions = [
-            ["Bugungi kassa qancha?", "Bu oy qancha savdo?"],
-            ["Eng yaxshi ishchi kim?", "Eng ko'p qarzidor do'kon?"],
-            ["Ishlamaydigan do'konlar?", "Qaysi ishchi eng ko'p qarz?"],
-            ["Oylik hisobot", "Umumiy statistika"]
-        ]
+        questions = [["Bugungi kassa qancha?", "Bu oy qancha savdo?"], ["Eng yaxshi ishchi kim?", "Eng ko'p qarzidor do'kon?"], ["Ishlamaydigan do'konlar?", "Qaysi ishchi eng ko'p qarz?"], ["Oylik hisobot", "Umumiy statistika"]]
     else:
-        questions = [
-            ["Bugun qancha savdo?", "Bu oy qancha yig'dim?"],
-            ["Qarzi bor do'konlarim?", "Eng yaxshi do'konim?"],
-            ["O'tgan oy vs Bu oy", "Oylik hisobotim"],
-            ["Umumiy statistikam"]
-        ]
+        questions = [["Bugun qancha savdo?", "Bu oy qancha yig'dim?"], ["Qarzi bor do'konlarim?", "Eng yaxshi do'konim?"], ["O'tgan oy vs Bu oy", "Oylik hisobotim"], ["Umumiy statistikam"]]
     
-    question = questions[row_idx][col_idx]
-    await process_ai_question(callback.message, question, state, is_boss)
+    await process_ai_question(callback.message, questions[row_idx][col_idx], state, is_boss)
 
 @dp.callback_query(F.data == "ai_back_main")
 async def ai_back_callback(callback: CallbackQuery, state: FSMContext):
-    """AI dan orqaga qaytish"""
     await callback.answer()
     await state.clear()
-    
     uid = callback.from_user.id
+    # ✅ edit_text o'rniga answer ishlatildi (ReplyKeyboardMarkup uchun)
     if uid in BOSS_IDS:
-        await callback.message.edit_text("Xush kelibsiz, Boss 👑", reply_markup=get_boss_menu())
+        await callback.message.answer("Xush kelibsiz, Boss 👑", reply_markup=get_boss_menu())
     else:
-        await callback.message.edit_text("⬅️ Bosh menyu", reply_markup=get_worker_menu())
+        await callback.message.answer("⬅️ Bosh menyu", reply_markup=get_worker_menu())
 
 @dp.message(AppStates.ai_chat)
 async def ai_handle_chat(message: types.Message, state: FSMContext):
-    """AI orqali savollarga javob berish (matnli savollar)"""
     uid = message.from_user.id
-    user_question = message.text.strip()
-    is_boss = uid in BOSS_IDS
-    
-    await process_ai_question(message, user_question, state, is_boss)
+    await process_ai_question(message, message.text.strip(), state, uid in BOSS_IDS)
 
 async def process_ai_question(message: types.Message, question: str, state: FSMContext, is_boss: bool):
-    """AI savolni qayta ishlash"""
     uid = message.from_user.id
-    
     msg = await message.answer("🔍 Ma'lumotlar tahlil qilinmoqda...")
     
     try:
         conn = get_db(); cur = dict_cursor(conn)
-        
         today = date.today().strftime("%d.%m.%Y")
-        today_pattern = f"{today}%"
         current_month = datetime.now().strftime("%m.%Y")
-        month_pattern = f"%{current_month}%"
-        
-        # O'tgan oy
-        last_month_dt = datetime.now() - timedelta(days=30)
-        last_month = last_month_dt.strftime("%m.%Y")
-        last_month_pattern = f"%{last_month}%"
+        last_month = (datetime.now() - timedelta(days=30)).strftime("%m.%Y")
         
         q_lower = question.lower()
         answer = ""
         
-        # 1. BUGUNGI KASSA
         if "bugungi kassa" in q_lower or "bugun qancha savdo" in q_lower:
             if is_boss:
-                cur.execute(f"""
-                    SELECT COUNT(id) as count, COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total),0) as total
-                    FROM sales WHERE date LIKE %s
-                """, (today_pattern,))
+                cur.execute("SELECT COUNT(id) as count, COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total),0) as total FROM sales WHERE date LIKE %s", (f"{today}%",))
             else:
-                cur.execute(f"""
-                    SELECT COUNT(id) as count, COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total),0) as total
-                    FROM sales WHERE date LIKE %s AND worker_id = %s
-                """, (today_pattern, uid))
-            result = cur.fetchone()
-            
-            answer = f"📅 **Bugungi natijalar ({today})**\n\n💵 Kassa: {fmt(result['cash'])}\n💰 Savdo hajmi: {fmt(result['total'])}\n📝 Savdolar soni: {result['count']} ta"
+                cur.execute("SELECT COUNT(id) as count, COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total),0) as total FROM sales WHERE date LIKE %s AND worker_id = %s", (f"{today}%", uid))
+            r = cur.fetchone()
+            answer = f"📅 **Bugungi natijalar**\n💵 Kassa: {fmt(r['cash'])}\n💰 Savdo: {fmt(r['total'])}\n📝 Soni: {r['count']} ta"
         
-        # 2. BU OY SAVDO
         elif "bu oy" in q_lower and "qancha" in q_lower:
             if is_boss:
-                cur.execute(f"""
-                    SELECT COUNT(id) as count, COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total),0) as total
-                    FROM sales WHERE date LIKE %s
-                """, (month_pattern,))
+                cur.execute("SELECT COUNT(id) as count, COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total),0) as total FROM sales WHERE date LIKE %s", (f"%{current_month}%",))
             else:
-                cur.execute(f"""
-                    SELECT COUNT(id) as count, COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total),0) as total
-                    FROM sales WHERE date LIKE %s AND worker_id = %s
-                """, (month_pattern, uid))
-            result = cur.fetchone()
+                cur.execute("SELECT COUNT(id) as count, COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total),0) as total FROM sales WHERE date LIKE %s AND worker_id = %s", (f"%{current_month}%", uid))
+            r = cur.fetchone()
+            answer = f"📅 **Bu oy ({current_month})**\n💵 Yig'ilgan: {fmt(r['cash'])}\n💰 Savdo: {fmt(r['total'])}\n📝 Soni: {r['count']} ta"
             
-            answer = f"📅 **Bu oy ({current_month})**\n\n💵 Yig'ilgan: {fmt(result['cash'])}\n💰 Savdo: {fmt(result['total'])}\n📝 Savdolar: {result['count']} ta"
-        
-        # 3. ENG YAXSHI ISHCHI
         elif "eng yaxshi ishchi" in q_lower and is_boss:
-            cur.execute("""
-                SELECT u.name, COALESCE(SUM(s.total),0) as total_sales, COALESCE(SUM(s.cash),0) as cash
-                FROM sales s JOIN users u ON s.worker_id = u.user_id
-                GROUP BY u.user_id, u.name
-                ORDER BY total_sales DESC LIMIT 1
-            """)
-            result = cur.fetchone()
+            cur.execute("SELECT u.name, COALESCE(SUM(s.total),0) as total_sales FROM sales s JOIN users u ON s.worker_id = u.user_id GROUP BY u.user_id, u.name ORDER BY total_sales DESC LIMIT 1")
+            r = cur.fetchone()
+            answer = f"🏆 **Eng yaxshi ishchi**\n👤 {r['name'] if r else 'Topilmadi'}\n💰 {fmt(r['total_sales']) if r else 0}"
             
-            if result:
-                answer = f"🏆 **Eng yaxshi ishchi**\n\n👤 Ism: {result['name']}\n💰 Savdo: {fmt(result['total_sales'])}\n💵 Naqt: {fmt(result['cash'])}"
-            else:
-                answer = "📊 Hozircha ma'lumot yo'q."
-        
-        # 4. ENG KO'P QARZIDOR DO'KON
-        elif "qarzidor do'kon" in q_lower or ("ko'p qarz" in q_lower and "ishchi" not in q_lower):
+        elif "qarzidor do'kon" in q_lower or "ko'p qarz" in q_lower:
             if is_boss:
-                cur.execute("""
-                    SELECT normalized_store, COALESCE(SUM(total),0) as total_sales, 
-                           COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total)-SUM(cash),0) as debt
-                    FROM sales WHERE normalized_store IS NOT NULL
-                    GROUP BY normalized_store
-                    HAVING COALESCE(SUM(total)-SUM(cash),0) > 0
-                    ORDER BY debt DESC LIMIT 1
-                """)
+                cur.execute("SELECT normalized_store, COALESCE(SUM(total)-SUM(cash),0) as debt FROM sales WHERE normalized_store IS NOT NULL GROUP BY normalized_store HAVING debt > 0 ORDER BY debt DESC LIMIT 1")
             else:
-                cur.execute("""
-                    SELECT normalized_store, COALESCE(SUM(total),0) as total_sales, 
-                           COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total)-SUM(cash),0) as debt
-                    FROM sales WHERE worker_id = %s AND normalized_store IS NOT NULL
-                    GROUP BY normalized_store
-                    HAVING COALESCE(SUM(total)-SUM(cash),0) > 0
-                    ORDER BY debt DESC LIMIT 1
-                """, (uid,))
+                cur.execute("SELECT normalized_store, COALESCE(SUM(total)-SUM(cash),0) as debt FROM sales WHERE worker_id = %s AND normalized_store IS NOT NULL GROUP BY normalized_store HAVING debt > 0 ORDER BY debt DESC LIMIT 1", (uid,))
+            r = cur.fetchone()
+            answer = f"💳 **Eng ko'p qarzidor**\n🏪 {r['normalized_store'] if r else 'Yoq'}\n📉 Qarz: {fmt(r['debt']) if r else 0}"
             
-            result = cur.fetchone()
-            
-            if result:
-                answer = f"💳 **Eng ko'p qarzidor do'kon**\n\n🏪 Do'kon: {result['normalized_store']}\n💰 Savdo: {fmt(result['total_sales'])}\n💵 Yig'ilgan: {fmt(result['cash'])}\n📉 **Qarz: {fmt(result['debt'])}**"
-            else:
-                answer = "✅ Hech qanday qarz yo'q!"
-        
-        # 5. ISHLAMAYDIGAN DO'KONLAR
         elif "ishlamay" in q_lower and is_boss:
-            cur.execute("""
-                SELECT normalized_store, MAX(date) as last_sale, COUNT(id) as total_sales
-                FROM sales WHERE normalized_store IS NOT NULL
-                GROUP BY normalized_store
-                HAVING MAX(date::date) < CURRENT_DATE - INTERVAL '30 days'
-                ORDER BY last_sale ASC LIMIT 5
-            """)
-            results = cur.fetchall()
+            cur.execute("SELECT normalized_store, MAX(date) as last_sale FROM sales WHERE normalized_store IS NOT NULL GROUP BY normalized_store HAVING MAX(date::date) < CURRENT_DATE - INTERVAL '30 days' ORDER BY last_sale ASC LIMIT 3")
+            res = cur.fetchall()
+            answer = "⏰ **Faol bo'lmaganlar:**\n" + "\n".join([f"{i+1}. {r['normalized_store']} (oxirgi: {r['last_sale']})" for i, r in enumerate(res)]) if res else "✅ Barchasi faol!"
             
-            if results:
-                answer = "⏰ **30+ kundan beri ishlamaydigan do'konlar:**\n\n"
-                for i, r in enumerate(results, 1):
-                    last_date = r['last_sale']
-                    try:
-                        dt = datetime.strptime(str(last_date).split()[0], "%d.%m.%Y")
-                        days = (datetime.now() - dt).days
-                    except:
-                        days = "?"
-                    
-                    answer += f"{i}. 🏪 **{r['normalized_store']}**\n   Oxirgi savdo: {last_date} ({days} kun oldin)\n   Jami savdolar: {r['total_sales']} ta\n\n"
-            else:
-                answer = "✅ Barcha do'konlar faol!"
-        
-        # 6. QARZI BOR DO'KONLAR
         elif "qarzi bor do'kon" in q_lower and not is_boss:
-            cur.execute("""
-                SELECT normalized_store, COALESCE(SUM(total),0) as total, 
-                       COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total)-SUM(cash),0) as debt
-                FROM sales WHERE worker_id = %s AND normalized_store IS NOT NULL
-                GROUP BY normalized_store
-                HAVING COALESCE(SUM(total)-SUM(cash),0) > 0
-                ORDER BY debt DESC
-            """, (uid,))
-            results = cur.fetchall()
+            cur.execute("SELECT normalized_store, COALESCE(SUM(total)-SUM(cash),0) as debt FROM sales WHERE worker_id = %s AND normalized_store IS NOT NULL GROUP BY normalized_store HAVING debt > 0 ORDER BY debt DESC", (uid,))
+            res = cur.fetchall()
+            answer = "💳 **Qarzlaringiz:**\n" + "\n".join([f"{i+1}. {r['normalized_store']} - {fmt(r['debt'])}" for i, r in enumerate(res)]) if res else "✅ Qarz yo'q!"
             
-            if results:
-                answer = "💳 **Sizning qarzi bor do'konlaringiz:**\n\n"
-                total_debt = sum(r['debt'] for r in results)
-                for i, r in enumerate(results, 1):
-                    answer += f"{i}. 🏪 **{r['normalized_store']}** - {fmt(r['debt'])}\n"
-                answer += f"\n💰 **Jami qarz: {fmt(total_debt)}**"
-            else:
-                answer = "✅ Sizda qarzi bor do'konlar yo'q!"
-        
-        # 7. O'TGAN OY VS BU OY (YANGI!)
         elif "o'tgan oy" in q_lower and "bu oy" in q_lower and not is_boss:
-            # Bu oy
-            cur.execute(f"""
-                SELECT COUNT(id) as sales, COALESCE(SUM(total),0) as revenue, 
-                       COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total)-SUM(cash),0) as debt,
-                       COALESCE(SUM(CASE WHEN txn_type = 'qaytarish' THEN total ELSE 0 END),0) as returns
-                FROM sales WHERE date LIKE %s AND worker_id = %s
-            """, (month_pattern, uid))
-            this_month = cur.fetchone()
+            cur.execute("SELECT COUNT(id), COALESCE(SUM(total),0), COALESCE(SUM(cash),0), COALESCE(SUM(total)-SUM(cash),0) FROM sales WHERE date LIKE %s AND worker_id = %s", (f"%{current_month}%", uid))
+            this = cur.fetchone()
+            cur.execute("SELECT COUNT(id), COALESCE(SUM(total),0), COALESCE(SUM(cash),0), COALESCE(SUM(total)-SUM(cash),0) FROM sales WHERE date LIKE %s AND worker_id = %s", (f"%{last_month}%", uid))
+            last = cur.fetchone()
+            answer = f"📊 **SOLISHTIRISH**\n📅 O'tgan oy: 💰{fmt(last[1])} 💵{fmt(last[2])} 📉{fmt(last[3])}\n📅 Bu oy: 💰{fmt(this[1])} 💵{fmt(this[2])} 📉{fmt(this[3])}"
             
-            # O'tgan oy
-            cur.execute(f"""
-                SELECT COUNT(id) as sales, COALESCE(SUM(total),0) as revenue, 
-                       COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total)-SUM(cash),0) as debt,
-                       COALESCE(SUM(CASE WHEN txn_type = 'qaytarish' THEN total ELSE 0 END),0) as returns
-                FROM sales WHERE date LIKE %s AND worker_id = %s
-            """, (last_month_pattern, uid))
-            last_month_data = cur.fetchone()
-            
-            answer = f"📊 **SOLISHTIRISH: O'tgan oy vs Bu oy**\n\n"
-            answer += f"📅 **O'TGAN OY ({last_month}):**\n"
-            answer += f"  📝 Savdolar: {last_month_data['sales']} ta\n"
-            answer += f"  💰 Savdo hajmi: {fmt(last_month_data['revenue'])}\n"
-            answer += f"  💵 Naqt: {fmt(last_month_data['cash'])}\n"
-            answer += f"  🔄 Qaytarish: {fmt(last_month_data['returns'])}\n"
-            answer += f"  📉 Qarz: {fmt(last_month_data['debt'])}\n\n"
-            
-            answer += f"📅 **BU OY ({current_month}):**\n"
-            answer += f"  📝 Savdolar: {this_month['sales']} ta\n"
-            answer += f"  💰 Savdo hajmi: {fmt(this_month['revenue'])}\n"
-            answer += f"  💵 Naqt: {fmt(this_month['cash'])}\n"
-            answer += f"  🔄 Qaytarish: {fmt(this_month['returns'])}\n"
-            answer += f"  📉 Qarz: {fmt(this_month['debt'])}\n\n"
-            
-            # Farq
-            if last_month_data['revenue'] > 0:
-                change = ((this_month['revenue'] - last_month_data['revenue']) / last_month_data['revenue']) * 100
-                if change > 0:
-                    answer += f"📈 **O'sish: +{change:.1f}%**"
-                elif change < 0:
-                    answer += f"📉 **Kamayish: {change:.1f}%"
-                else:
-                    answer += f"➡️ **O'zgarishsiz**"
-        
-        # 8. UMUMIY STATISTIKA
         elif "statistika" in q_lower or "umumiy" in q_lower:
             if is_boss:
-                cur.execute("""
-                    SELECT COUNT(DISTINCT worker_id) as workers, COUNT(DISTINCT normalized_store) as stores,
-                           COUNT(id) as sales, COALESCE(SUM(total),0) as revenue, 
-                           COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total)-SUM(cash),0) as debt
-                    FROM sales
-                """)
-                result = cur.fetchone()
-                
-                answer = f"📊 **UMUMIY STATISTIKA**\n\n👥 Ishchilar: {result['workers']} ta\n🏪 Do'konlar: {result['stores']} ta\n📝 Savdolar: {result['sales']} ta\n💰 Savdo hajmi: {fmt(result['revenue'])}\n💵 Yig'ilgan: {fmt(result['cash'])}\n📉 Qarz: {fmt(result['debt'])}"
+                cur.execute("SELECT COUNT(DISTINCT worker_id), COUNT(DISTINCT normalized_store), COUNT(id), COALESCE(SUM(total),0), COALESCE(SUM(cash),0), COALESCE(SUM(total)-SUM(cash),0) FROM sales")
             else:
-                cur.execute("""
-                    SELECT COUNT(DISTINCT normalized_store) as stores, COUNT(id) as sales,
-                           COALESCE(SUM(total),0) as revenue, COALESCE(SUM(cash),0) as cash,
-                           COALESCE(SUM(total)-SUM(cash),0) as debt
-                    FROM sales WHERE worker_id = %s
-                """, (uid,))
-                result = cur.fetchone()
-                
-                answer = f"📊 **SIZNING STATISTIKANGIZ**\n\n🏪 Do'konlar: {result['stores']} ta\n📝 Savdolar: {result['sales']} ta\n💰 Savdo: {fmt(result['revenue'])}\n💵 Yig'ilgan: {fmt(result['cash'])}\n📉 Qarz: {fmt(result['debt'])}"
-        
-        # 9. OYLIK HISOBOT
+                cur.execute("SELECT COUNT(DISTINCT normalized_store), COUNT(id), COALESCE(SUM(total),0), COALESCE(SUM(cash),0), COALESCE(SUM(total)-SUM(cash),0) FROM sales WHERE worker_id = %s", (uid,))
+            r = cur.fetchone()
+            prefix = "📊 **UMUMIY**\n" if is_boss else "📊 **SIZNING**\n"
+            stats = f"🏪 Do'konlar: {r[0]} ta\n📝 Savdolar: {r[1]} ta\n💰 Hajm: {fmt(r[2])}\n💵 Naqt: {fmt(r[3])}\n📉 Qarz: {fmt(r[4])}"
+            answer = prefix + stats
+            
         elif "hisobot" in q_lower:
             if is_boss:
-                cur.execute(f"""
-                    SELECT COUNT(id) as sales, COALESCE(SUM(total),0) as revenue, 
-                           COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total)-SUM(cash),0) as debt
-                    FROM sales WHERE date LIKE %s
-                """, (month_pattern,))
+                cur.execute("SELECT COUNT(id), COALESCE(SUM(total),0), COALESCE(SUM(cash),0), COALESCE(SUM(total)-SUM(cash),0) FROM sales WHERE date LIKE %s", (f"%{current_month}%",))
             else:
-                cur.execute(f"""
-                    SELECT COUNT(id) as sales, COALESCE(SUM(total),0) as revenue, 
-                           COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total)-SUM(cash),0) as debt
-                    FROM sales WHERE date LIKE %s AND worker_id = %s
-                """, (month_pattern, uid))
+                cur.execute("SELECT COUNT(id), COALESCE(SUM(total),0), COALESCE(SUM(cash),0), COALESCE(SUM(total)-SUM(cash),0) FROM sales WHERE date LIKE %s AND worker_id = %s", (f"%{current_month}%", uid))
+            r = cur.fetchone()
+            answer = f"📅 **Oylik hisobot**\n📝 {r[0]} ta | 💰 {fmt(r[1])} | 💵 {fmt(r[2])} | 📉 {fmt(r[3])}"
             
-            result = cur.fetchone()
-            
-            answer = f"📅 **Oylik hisobot ({current_month})**\n\n📝 Savdolar: {result['sales']} ta\n💰 Savdo hajmi: {fmt(result['revenue'])}\n💵 Yig'ilgan: {fmt(result['cash'])}\n📉 Qarz: {fmt(result['debt'])}"
-        
-        # 10. ENG YAXSHI DO'KON
         elif "eng yaxshi do'kon" in q_lower:
             if is_boss:
-                cur.execute("""
-                    SELECT normalized_store, COALESCE(SUM(total),0) as total_sales, COALESCE(SUM(cash),0) as cash
-                    FROM sales WHERE normalized_store IS NOT NULL
-                    GROUP BY normalized_store
-                    ORDER BY total_sales DESC LIMIT 1
-                """)
+                cur.execute("SELECT normalized_store, COALESCE(SUM(total),0) as t FROM sales WHERE normalized_store IS NOT NULL GROUP BY normalized_store ORDER BY t DESC LIMIT 1")
             else:
-                cur.execute("""
-                    SELECT normalized_store, COALESCE(SUM(total),0) as total_sales, COALESCE(SUM(cash),0) as cash
-                    FROM sales WHERE worker_id = %s AND normalized_store IS NOT NULL
-                    GROUP BY normalized_store
-                    ORDER BY total_sales DESC LIMIT 1
-                """, (uid,))
+                cur.execute("SELECT normalized_store, COALESCE(SUM(total),0) as t FROM sales WHERE worker_id = %s AND normalized_store IS NOT NULL GROUP BY normalized_store ORDER BY t DESC LIMIT 1", (uid,))
+            r = cur.fetchone()
+            answer = f"🏆 **Eng yaxshi do'kon**\n🏪 {r['normalized_store'] if r else 'Yoq'}\n💰 {fmt(r['t']) if r else 0}"
             
-            result = cur.fetchone()
-            
-            if result and result['normalized_store']:
-                answer = f"🏆 **Eng yaxshi do'kon**\n\n🏪 Do'kon: {result['normalized_store']}\n💰 Savdo: {fmt(result['total_sales'])}\n💵 Naqt: {fmt(result['cash'])}"
-            else:
-                answer = "📊 Hozircha ma'lumot yo'q."
-        
-        # 11. QAYSI ISHCHI ENG KO'P QARZ
         elif "ishchi eng ko'p qarz" in q_lower and is_boss:
-            cur.execute("""
-                SELECT u.name, COALESCE(SUM(s.total)-SUM(s.cash),0) as total_debt, COUNT(s.id) as sales_count
-                FROM sales s JOIN users u ON s.worker_id = u.user_id
-                GROUP BY u.user_id, u.name
-                HAVING COALESCE(SUM(s.total)-SUM(s.cash),0) > 0
-                ORDER BY total_debt DESC LIMIT 3
-            """)
-            results = cur.fetchall()
+            cur.execute("SELECT u.name, COALESCE(SUM(s.total)-SUM(s.cash),0) as d FROM sales s JOIN users u ON s.worker_id = u.user_id GROUP BY u.user_id, u.name HAVING d > 0 ORDER BY d DESC LIMIT 3")
+            res = cur.fetchall()
+            answer = "💰 **Qarz yig'ganlar:**\n" + "\n".join([f"{i+1}. {r['name']} - {fmt(r['d'])}" for i, r in enumerate(res)]) if res else "✅ Qarz yo'q!"
             
-            if results:
-                answer = "💰 **Eng ko'p qarz yig'gan ishchilar:**\n\n"
-                for i, r in enumerate(results, 1):
-                    answer += f"{i}. 👤 **{r['name']}**\n   Qarz: {fmt(r['total_debt'])}\n   Savdolar: {r['sales_count']} ta\n\n"
-            else:
-                answer = "✅ Hech kimda qarz yo'q!"
-        
-        # 12. ERKIN SAVOL (AI ORQALI)
         else:
-            # Bazadan umumiy ma'lumot olish
-            cur.execute("""
-                SELECT COUNT(id) as total_sales, COALESCE(SUM(total),0) as revenue, 
-                       COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total)-SUM(cash),0) as debt
-                FROM sales {where_clause}
-            """.format(where_clause="WHERE worker_id = %s" if not is_boss else ""))
-            
+            # Erkin savol -> AI
             if is_boss:
-                stats = cur.fetchone()
+                cur.execute("SELECT COUNT(id), COALESCE(SUM(total),0), COALESCE(SUM(cash),0), COALESCE(SUM(total)-SUM(cash),0) FROM sales")
             else:
-                cur.execute("""
-                    SELECT COUNT(id) as total_sales, COALESCE(SUM(total),0) as revenue, 
-                           COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total)-SUM(cash),0) as debt
-                    FROM sales WHERE worker_id = %s
-                """, (uid,))
-                stats = cur.fetchone()
-            
-            context = f"""Jami savdolar: {stats['total_sales']}
-Umumiy savdo: {fmt(stats['revenue'])}
-Yig'ilgan: {fmt(stats['cash'])}
-Qarz: {fmt(stats['debt'])}"""
-            
-            # OpenAI API orqali javob
+                cur.execute("SELECT COUNT(id), COALESCE(SUM(total),0), COALESCE(SUM(cash),0), COALESCE(SUM(total)-SUM(cash),0) FROM sales WHERE worker_id = %s", (uid,))
+            s = cur.fetchone()
+            ctx = f"Savdolar: {s[0]}, Hajm: {fmt(s[1])}, Naqt: {fmt(s[2])}, Qarz: {fmt(s[3])}"
             try:
-                res = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": f"Siz MK Kassa boti yordamchisisiz. Foydalanuvchi savoliga quyidagi ma'lumotlar asosida javob bering. Agar savol bot haqida bo'lsa, do'stona javob bering:\n\n{context}"},
-                        {"role": "user", "content": question}
-                    ],
-                    max_tokens=200
-                )
+                res = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"system","content":f"MK Kassa yordamchisisiz. Ma'lumot: {ctx}. Qisqa javob bering."},{"role":"user","content":question}], max_tokens=150)
                 answer = res.choices[0].message.content
             except:
-                answer = f"❓ Kechirasiz, bu savolga javob topilmadi. Quyidagi mavzularda savol berishingiz mumkin:\n\n• Bugungi/bu oy savdo\n• Qarzidor do'konlar\n• Eng yaxshi ishchi/do'kon\n• Umumiy statistika"
+                answer = "❓ AI hozircha band. Boshqa savol bering."
         
         conn.close()
-        
-        # Javobni yuborish
         await msg.edit_text(answer, parse_mode="Markdown")
-        
-        # Klaviaturani qaytarish (to'g'ri is_boss bilan)
-        kb = get_ai_questions_keyboard(is_boss)
-        await message.answer("❓ **Boshqa savol bering:**", reply_markup=kb, parse_mode="Markdown")
-        
+        await message.answer("❓ **Boshqa savol:**", reply_markup=get_ai_questions_keyboard(is_boss))
     except Exception as e:
         await msg.edit_text(f"❌ Xatolik: {e}")
 
+# ================= QOLGAN BOSS FUNKSIYALAR =================
 @dp.message(F.text == "📅 Oylik arxiv")
 async def boss_monthly_archive(message: types.Message):
     if message.from_user.id not in BOSS_IDS: return
@@ -748,16 +498,11 @@ async def boss_monthly_archive(message: types.Message):
     cur.execute("SELECT user_id, name FROM users WHERE role = 'worker' AND active = 1")
     workers = cur.fetchall()
     curr = datetime.now().strftime("%m.%Y")
-    out = f"📅 Oylik arxiv ({curr}):\n\n"
-    grand_total_sales = grand_total_cash = grand_total_debt = 0
+    out = f"📅 **Oylik arxiv ({curr})**\n\n"
     for w in workers:
         cur.execute("SELECT COALESCE(SUM(total),0), COALESCE(SUM(cash),0), COALESCE(SUM(total)-SUM(cash),0) FROM sales WHERE worker_id = %s AND date LIKE %s", (w['user_id'], f"%{curr}%"))
         r = cur.fetchone()
-        t, c, d = r[0], r[1], r[2]
-        out += f"👥 {w['name']}\n📉 O'tgan oydan qoldiq: 0 $\n💰 Bu oy savdo: {fmt(t)}\n💵 Bu oy naqt: {fmt(c)}\n📉 Bu oy yangi qarz: {fmt(d)}\n✅ Umumiy joriy qoldiq: {fmt(d)}\n\n"
-        grand_total_sales += t; grand_total_cash += c; grand_total_debt += d
-    out += f"📅 Oylik hisobot ({curr}): Umumiy\n"
-    out += f"📉 O'tgan oydan qoldiq: 0 $\n💰 Bu oy savdo: {fmt(grand_total_sales)}\n💵 Bu oy naqt: {fmt(grand_total_cash)}\n📉 Bu oy yangi qarz: {fmt(grand_total_debt)}"
+        out += f"👤 {w['name']}\n💰 {fmt(r[0])} | 💵 {fmt(r[1])} | 📉 {fmt(r[2])}\n\n"
     conn.close()
     await message.answer(out)
 
@@ -765,8 +510,7 @@ async def boss_monthly_archive(message: types.Message):
 async def boss_all_stores(message: types.Message):
     if message.from_user.id not in BOSS_IDS: return
     conn = get_db(); cur = dict_cursor(conn)
-    cur.execute("""SELECT DISTINCT s.normalized_store, u.name FROM sales s 
-                   JOIN users u ON s.worker_id = u.user_id ORDER BY u.name""")
+    cur.execute("SELECT DISTINCT s.normalized_store, u.name FROM sales s JOIN users u ON s.worker_id = u.user_id ORDER BY u.name")
     stores = cur.fetchall(); conn.close()
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"🏪 {s[0]} (👤 {s[1]})", callback_data=f"store_{s[0]}")] for s in stores])
     kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="back_main")])
@@ -776,25 +520,18 @@ async def boss_all_stores(message: types.Message):
 async def boss_top_workers(message: types.Message):
     if message.from_user.id not in BOSS_IDS: return
     conn = get_db(); cur = dict_cursor(conn)
-    cur.execute("""SELECT u.name as worker_name, COALESCE(SUM(s.total),0) as ts, COALESCE(SUM(s.cash),0) as tc, 
-                          COALESCE(SUM(s.total)-SUM(s.cash),0) as td, COUNT(s.id) as cnt 
-                   FROM sales s JOIN users u ON s.worker_id = u.user_id 
-                   GROUP BY u.name ORDER BY ts DESC""")
+    cur.execute("SELECT u.name, COALESCE(SUM(s.total),0), COALESCE(SUM(s.cash),0), COALESCE(SUM(s.total)-SUM(s.cash),0), COUNT(s.id) FROM sales s JOIN users u ON s.worker_id = u.user_id GROUP BY u.name ORDER BY 2 DESC")
     res = cur.fetchall(); conn.close()
-    out = "🏆 Ishchilar reytingi:\n"
-    for i, r in enumerate(res, 1):
-        out += f"{i}. {r['worker_name']} | 💰 {fmt(r['ts'])} | 💵 {fmt(r['tc'])} | 📉 {fmt(r['td'])} | 🧾 {r['cnt']} ta\n"
-    await message.answer(out if out.strip() != "🏆 Ishchilar reytingi:\n" else "📊 Ma'lumot yo'q")
+    out = "🏆 **Reyting:**\n" + "\n".join([f"{i+1}. {r[0]} | 💰{fmt(r[1])} | 💵{fmt(r[2])} | 📉{fmt(r[3])} | 🧾{r[4]}" for i, r in enumerate(res)])
+    await message.answer(out if out.strip() != "🏆 Reyting:\n" else "📊 Ma'lumot yo'q")
 
 @dp.message(F.text == "🏆 Eng yaxshi do'konlar")
 async def boss_top_stores(message: types.Message):
     if message.from_user.id not in BOSS_IDS: return
     conn = get_db(); cur = dict_cursor(conn)
-    cur.execute("SELECT normalized_store, COALESCE(SUM(total),0) as ts, COUNT(id) as cnt FROM sales GROUP BY normalized_store ORDER BY ts DESC LIMIT 10")
+    cur.execute("SELECT normalized_store, COALESCE(SUM(total),0), COUNT(id) FROM sales GROUP BY normalized_store ORDER BY 2 DESC LIMIT 10")
     res = cur.fetchall(); conn.close()
-    out = "🏆 TOP Do'konlar:\n"
-    for i, r in enumerate(res, 1):
-        out += f"{i}. 🏪 {r['normalized_store']} | 💰 {fmt(r['ts'])} | 🧾 {r['cnt']} marta\n"
+    out = "🏆 **TOP Do'konlar:**\n" + "\n".join([f"{i+1}. 🏪 {r[0]} | 💰 {fmt(r[1])} | 🧾 {r[2]}" for i, r in enumerate(res)])
     await message.answer(out if out.strip() != "🏆 TOP Do'konlar:\n" else "📊 Ma'lumot yo'q")
 
 # ================= OYLIK KASSA =================
@@ -802,22 +539,19 @@ async def boss_top_stores(message: types.Message):
 async def handle_monthly_cash(message: types.Message):
     uid = message.from_user.id
     month = datetime.now().strftime("%m.%Y")
-
     if uid not in BOSS_IDS:
         conn = get_db(); cur = dict_cursor(conn)
-        cur.execute("""SELECT SUBSTR(date, 1, 10) as d, COALESCE(SUM(cash),0) FROM sales 
-                       WHERE worker_id = %s AND date LIKE %s AND cash > 0 GROUP BY d ORDER BY d DESC""", (uid, f"%{month}%"))
+        cur.execute("SELECT SUBSTR(date, 1, 10) as d, COALESCE(SUM(cash),0) FROM sales WHERE worker_id = %s AND date LIKE %s AND cash > 0 GROUP BY d ORDER BY d DESC", (uid, f"%{month}%"))
         rows = cur.fetchall(); conn.close()
-        if not rows: return await message.answer(f"📅 {month} oyida naqt kassa harakati yo'q.")
+        if not rows: return await message.answer(f"📅 {month}: Ma'lumot yo'q.")
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"📆 {r[0]} | {fmt(r[1])}", callback_data=f"day_{r[0]}")] for r in rows])
         kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="back_main")])
-        return await message.answer(f"📅 {month} oylik kassa hisoboti (kun bo'yicha):", reply_markup=kb)
-
+        return await message.answer(f"📅 {month} kassa:", reply_markup=kb)
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📅 Kunlik Umumiy Hisobot", callback_data=f"mc_all_{month}")],
-        [InlineKeyboardButton(text="👥 Ishchi bo'yicha Ko'rish", callback_data=f"mc_worker_{month}")]
+        [InlineKeyboardButton(text="📅 Kunlik Umumiy", callback_data=f"mc_all_{month}")],
+        [InlineKeyboardButton(text="👥 Ishchi bo'yicha", callback_data=f"mc_worker_{month}")]
     ])
-    await message.answer(f"📅 Oylik kassa ({month}) rejimini tanlang:", reply_markup=kb)
+    await message.answer(f"📅 Oylik kassa ({month}):", reply_markup=kb)
 
 @dp.callback_query(F.data.startswith("mc_all_"))
 async def mc_all_dates(callback: CallbackQuery):
@@ -826,34 +560,28 @@ async def mc_all_dates(callback: CallbackQuery):
     conn = get_db(); cur = dict_cursor(conn)
     cur.execute("SELECT DISTINCT SUBSTR(date, 1, 10) as d FROM sales WHERE date LIKE %s ORDER BY d DESC", (f"%{month}%",))
     dates = [r['d'] for r in cur.fetchall()]; conn.close()
-    if not dates: return await callback.message.edit_text("📭 Bu oyda ma'lumot yo'q.")
+    if not dates: return await callback.message.edit_text("📭 Yo'q.")
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"📆 {d}", callback_data=f"day_all_{d}")] for d in dates])
     kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="back_main")])
-    await callback.message.edit_text(f"📅 {month} kunlarini tanlang:", reply_markup=kb)
+    await callback.message.edit_text(f"📅 {month} kunlari:", reply_markup=kb)
 
 @dp.callback_query(F.data.startswith("day_all_"))
 async def day_all_summary(callback: CallbackQuery):
     await callback.answer()
     day = callback.data.replace("day_all_", "")
     conn = get_db(); cur = dict_cursor(conn)
-    cur.execute("""SELECT u.name, s.store_name, COALESCE(SUM(s.cash),0) as cash 
-                   FROM sales s JOIN users u ON s.worker_id = u.user_id 
-                   WHERE s.date LIKE %s AND s.cash > 0 GROUP BY u.name, s.store_name""", (f"{day}%",))
+    cur.execute("SELECT u.name, s.store_name, COALESCE(SUM(s.cash),0) FROM sales s JOIN users u ON s.worker_id = u.user_id WHERE s.date LIKE %s AND s.cash > 0 GROUP BY u.name, s.store_name", (f"{day}%",))
     rows = cur.fetchall()
-    cur.execute("""SELECT u.name, COALESCE(SUM(s.cash),0) as total 
-                   FROM sales s JOIN users u ON s.worker_id = u.user_id 
-                   WHERE s.date LIKE %s AND s.cash > 0 GROUP BY u.name""", (f"{day}%",))
-    totals = {r['name']: r['total'] for r in cur.fetchall()}; conn.close()
-    
-    out = f"💰 Kassa (Live) - {day}\n"
-    cur_w = ""
+    cur.execute("SELECT u.name, COALESCE(SUM(s.cash),0) FROM sales s JOIN users u ON s.worker_id = u.user_id WHERE s.date LIKE %s AND s.cash > 0 GROUP BY u.name", (f"{day}%",))
+    totals = {r[0]: r[1] for r in cur.fetchall()}; conn.close()
+    out, cur_w = f"💰 {day}\n", ""
     for r in rows:
-        if r['name'] != cur_w:
+        if r[0] != cur_w:
             if cur_w: out += f"👤 {cur_w} - Jami: {fmt(totals.get(cur_w, 0))}\n\n"
-            cur_w = r['name']
-        out += f"👤 {r['name']} - 🏪 {r['store_name']} - {fmt(r['cash'])}💵\n"
-    out += f"👤 {cur_w} - Jami: {fmt(totals.get(cur_w, 0))}\n"
-    await callback.message.edit_text(out, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Sanalar", callback_data="back_main")]]))
+            cur_w = r[0]; out += f"👤 **{cur_w}**:\n"
+        out += f"  🏪 {r[1]} - {fmt(r[2])}\n"
+    out += f"👤 {cur_w} - Jami: {fmt(totals.get(cur_w, 0))}"
+    await callback.message.edit_text(out, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Sanalar", callback_data="back_main")]]))
 
 @dp.callback_query(F.data.startswith("mc_worker_"))
 async def mc_worker_list(callback: CallbackQuery):
@@ -873,26 +601,22 @@ async def sel_worker_dates(callback: CallbackQuery):
     cur.execute("SELECT name FROM users WHERE user_id=%s", (uid,)); w_name = cur.fetchone()['name']
     cur.execute("SELECT DISTINCT SUBSTR(date, 1, 10) as d FROM sales WHERE worker_id=%s ORDER BY d DESC", (uid,))
     dates = [r['d'] for r in cur.fetchall()]; conn.close()
-    if not dates: return await callback.message.edit_text("📭 Ma'lumot yo'q.")
+    if not dates: return await callback.message.edit_text("📭 Yo'q.")
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"📆 {d}", callback_data=f"day_worker_{uid}_{d}")] for d in dates])
     kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Ishchilar", callback_data=f"mc_worker_{datetime.now().strftime('%m.%Y')}")])
-    await callback.message.edit_text(f"👤 {w_name} uchun sanalar:", reply_markup=kb)
+    await callback.message.edit_text(f"👤 {w_name} sanalari:", reply_markup=kb)
 
 @dp.callback_query(F.data.startswith("day_worker_"))
 async def day_worker_summary(callback: CallbackQuery):
     await callback.answer()
-    parts = callback.data.replace("day_worker_", "").split("_")
-    uid, day = int(parts[0]), parts[1]
+    uid, day = callback.data.replace("day_worker_", "").split("_")
+    uid = int(uid)
     conn = get_db(); cur = dict_cursor(conn)
     cur.execute("SELECT name FROM users WHERE user_id=%s", (uid,)); w_name = cur.fetchone()['name']
-    cur.execute("""SELECT store_name, COALESCE(SUM(cash),0) as cash FROM sales 
-                   WHERE worker_id=%s AND date LIKE %s AND cash>0 GROUP BY store_name""", (uid, f"{day}%"))
+    cur.execute("SELECT store_name, COALESCE(SUM(cash),0) FROM sales WHERE worker_id=%s AND date LIKE %s AND cash>0 GROUP BY store_name", (uid, f"{day}%"))
     rows = cur.fetchall(); conn.close()
-    out = f"💰 {w_name} - {day}\n"
-    total = 0
-    for r in rows:
-        out += f"🏪 {r['store_name']} | 💵 {fmt(r['cash'])}\n"
-        total += r['cash']
+    out, total = f"💰 {w_name} - {day}\n", 0
+    for r in rows: out += f"🏪 {r[0]} | 💵 {fmt(r[1])}\n"; total += r[1]
     out += f"\n💰 Jami: {fmt(total)}"
     await callback.message.edit_text(out, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Sanalar", callback_data=f"sel_worker_{uid}")]]))
 
@@ -900,50 +624,41 @@ async def day_worker_summary(callback: CallbackQuery):
 async def calculate_salary(message: types.Message):
     uid = message.from_user.id
     month = datetime.now().strftime("%m.%Y")
-    
     if uid in BOSS_IDS:
         conn = get_db(); cur = dict_cursor(conn)
         cur.execute("SELECT user_id, name FROM users WHERE role = 'worker' AND active = 1")
-        workers = cur.fetchall()
-        out = f"💰 Oylik maosh hisoboti ({month}):\n\n"
-        grand_salary = 0
+        workers = cur.fetchall(); out, grand = f"💰 Maosh ({month}):\n\n", 0
         for w in workers:
-            cur.execute("""SELECT COALESCE(SUM(cash),0) FROM sales WHERE worker_id = %s AND date LIKE %s AND cash > 0""", (w['user_id'], f"%{month}%"))
-            result = cur.fetchone()
-            total_cash = result[0]
-            percent = total_cash * 0.08
-            fixa = 150 if 1500 <= total_cash < 2000 else (200 if 2000 <= total_cash < 3000 else (300 if total_cash >= 3000 else 0))
-            salary = percent + fixa; grand_salary += salary
-            out += f"👥 {w['name']}\n📊 Yig'ilgan naqt: {fmt(total_cash)}\n📈 8% ulush: {fmt(percent)}\n🎁 Fiksa bonus: {fmt(fixa)}\n✅ Jami maosh: {fmt(salary)}\n\n"
-        out += f"💰 JAMI MAOSH XARAJATI: {fmt(grand_salary)}"; conn.close()
+            cur.execute("SELECT COALESCE(SUM(cash),0) FROM sales WHERE worker_id = %s AND date LIKE %s AND cash > 0", (w['user_id'], f"%{month}%"))
+            tc = cur.fetchone()[0]; pct, fix = tc * 0.08, (150 if 1500<=tc<2000 else (200 if 2000<=tc<3000 else (300 if tc>=3000 else 0)))
+            sal = pct + fix; grand += sal
+            out += f"👥 {w['name']}\n💵 {fmt(tc)} | 📈 {fmt(pct)} | 🎁 {fmt(fix)} | ✅ {fmt(sal)}\n\n"
+        out += f"💰 JAMI: {fmt(grand)}"; conn.close()
         return await message.answer(out)
-    
     w_cond, w_params = get_worker_filter(uid)
-    params = (f"%{month}%",) + w_params
     conn = get_db(); cur = dict_cursor(conn)
-    cur.execute(f"SELECT COALESCE(SUM(cash),0) FROM sales WHERE date LIKE %s AND cash > 0 {w_cond}", params)
-    total_cash = cur.fetchone()[0]; conn.close()
-    percent = total_cash * 0.08
-    fixa = 150 if 1500 <= total_cash < 2000 else (200 if 2000 <= total_cash < 3000 else (300 if total_cash >= 3000 else 0))
-    await message.answer(f"💰 Oylik maosh hisoboti ({month}):\n\n📊 Yig'ilgan naqt: {fmt(total_cash)}\n📈 8% ulush: {fmt(percent)}\n🎁 Fiksa bonus: {fmt(fixa)}\n✅ Itog (Jami maosh): {fmt(percent + fixa)}")
+    cur.execute("SELECT COALESCE(SUM(cash),0) FROM sales WHERE date LIKE %s AND cash > 0 " + w_cond, (f"%{month}%",) + w_params)
+    tc = cur.fetchone()[0]; conn.close()
+    pct, fix = tc * 0.08, (150 if 1500<=tc<2000 else (200 if 2000<=tc<3000 else (300 if tc>=3000 else 0)))
+    await message.answer(f"💰 Maosh ({month}):\n💵 {fmt(tc)} | 📈 {fmt(pct)} | 🎁 {fmt(fix)} | ✅ {fmt(pct+fix)}")
 
-# ================= ISHCHI FUNKSIYALARI =================
+# ================= ISHCHI FUNKSIYALARI (TUZATILGAN SQL) =================
 @dp.message(F.text == "📊 Kunlik kassa")
 async def daily_cash(message: types.Message):
     uid = message.from_user.id
     if uid in BOSS_IDS: return
-    w_cond, w_params = get_worker_filter(uid)
     today = date.today().strftime("%d.%m.%Y")
+    w_cond, w_params = get_worker_filter(uid)
     params = (f"{today}%",) + w_params
     conn = get_db(); cur = dict_cursor(conn)
-    cur.execute(f"SELECT store_name, cash, date FROM sales WHERE date LIKE %s AND cash > 0 {w_cond} ORDER BY id DESC", params)
+    # ✅ f-string o'rniga + w_cond ishlatildi
+    cur.execute("SELECT store_name, cash, date FROM sales WHERE date LIKE %s AND cash > 0 " + w_cond + " ORDER BY id DESC", params)
     rows = cur.fetchall()
-    cur.execute(f"SELECT COALESCE(SUM(cash),0) FROM sales WHERE date LIKE %s AND cash > 0 {w_cond}", params)
+    cur.execute("SELECT COALESCE(SUM(cash),0) FROM sales WHERE date LIKE %s AND cash > 0 " + w_cond, params)
     total_cash = cur.fetchone()[0]; conn.close()
-    if not rows: return await message.answer("📅 Bugun naqt kiritilmagan.")
-    out = f"📅 Bugungi naqt harakatlar ({today}):\n"
-    for r in rows: out += f"🏪 {r['store_name']} | 💵 {fmt(r['cash'])} | 🕒 {r['date'].split()[1]}\n"
-    out += f"\n💰 Jami yig'ilgan: {fmt(total_cash)}"
+    if not rows: return await message.answer("📅 Bugun naqt yo'q.")
+    out = f"📅 Bugun ({today}):\n" + "\n".join([f"🏪 {r['store_name']} | 💵 {fmt(r['cash'])}" for r in rows])
+    out += f"\n💰 Jami: {fmt(total_cash)}"
     await message.answer(out)
 
 @dp.callback_query(F.data.startswith("day_"))
@@ -956,14 +671,11 @@ async def show_day_details(callback: CallbackQuery):
     w_cond, w_params = get_worker_filter(uid)
     params = (f"{day}%",) + w_params
     conn = get_db(); cur = dict_cursor(conn)
-    cur.execute(f"SELECT store_name, total, cash, txn_type, date FROM sales WHERE date LIKE %s AND cash > 0 {w_cond} ORDER BY id DESC", params)
+    cur.execute("SELECT store_name, total, cash, txn_type, date FROM sales WHERE date LIKE %s AND cash > 0 " + w_cond + " ORDER BY id DESC", params)
     rows = cur.fetchall(); conn.close()
-    if not rows: return await callback.message.edit_text("📭 Bu kunda naqt kassa harakati yo'q.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Oylik ro'yxat", callback_data="back_main")]]))
-    out = f"📅 {day} kunlik batafsil kassa:\n"
-    for r in rows:
-        if r['txn_type'] == 'savdo': out += f"🏪 {r['store_name']} | 📦 {fmt(r['total'])} | 💵 {fmt(r['cash'])} naqt ({r['date'].split()[1]})\n"
-        elif r['txn_type'] == 'naqt': out += f"🏪 {r['store_name']} | 💵 +{fmt(r['cash'])} ({r['date'].split()[1]})\n"
-    await callback.message.edit_text(out, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Orqaga", callback_data="back_main")]]))
+    if not rows: return await callback.message.edit_text("📭 Yo'q.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️", callback_data="back_main")]]))
+    out = f"📅 {day} batafsil:\n" + "\n".join([f"🏪 {r['store_name']} | 📦 {fmt(r['total'])} | 💵 {fmt(r['cash'])}" for r in rows])
+    await callback.message.edit_text(out, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️", callback_data="back_main")]]))
 
 @dp.message(F.text == "📅 Oylik hisobot")
 async def monthly_report(message: types.Message):
@@ -971,50 +683,36 @@ async def monthly_report(message: types.Message):
     if uid in BOSS_IDS: return
     w_cond, w_params = get_worker_filter(uid)
     curr = datetime.now().strftime("%m.%Y")
-    params_curr = (f"%{curr}%",) + w_params
     params_all = w_params
+    params_curr = (f"%{curr}%",) + w_params
     conn = get_db(); cur = dict_cursor(conn)
-    cur.execute(f"SELECT COALESCE(SUM(total),0), COALESCE(SUM(cash),0) FROM sales WHERE 1=1 {w_cond}", params_all)
+    cur.execute("SELECT COALESCE(SUM(total),0), COALESCE(SUM(cash),0) FROM sales WHERE 1=1 " + w_cond, params_all)
     t_all = cur.fetchone()
-    cur.execute(f"SELECT COALESCE(SUM(total),0), COALESCE(SUM(cash),0), COALESCE(SUM(total)-SUM(cash),0) FROM sales WHERE date LIKE %s {w_cond}", params_curr)
+    cur.execute("SELECT COALESCE(SUM(total),0), COALESCE(SUM(cash),0), COALESCE(SUM(total)-SUM(cash),0) FROM sales WHERE date LIKE %s " + w_cond, params_curr)
     t_curr = cur.fetchone(); conn.close()
-    old_debt = ((t_all[0] or 0) - (t_all[1] or 0)) - ((t_curr[2] or 0) if t_curr[2] else 0)
-    if old_debt < 0: old_debt = 0
-    await message.answer(f"📅 Oylik hisobot ({curr}):\n📉 O'tgan oydan qoldiq: {fmt(old_debt)}\n💰 Bu oy savdo: {fmt(t_curr[0])}\n💵 Bu oy naqt: {fmt(t_curr[1])}\n📉 Bu oy yangi qarz: {fmt(t_curr[2])}\n✅ Umumiy joriy qoldiq: {fmt(old_debt + (t_curr[2] or 0))}")
+    old_debt = max(0, ((t_all[0] or 0) - (t_all[1] or 0)) - (t_curr[2] or 0))
+    await message.answer(f"📅 Hisobot ({curr}):\n📉 O'tgan: {fmt(old_debt)}\n💰 Bu oy: {fmt(t_curr[0])}\n💵 Naqt: {fmt(t_curr[1])}\n📉 Yangi: {fmt(t_curr[2])}\n✅ Joriy: {fmt(old_debt + (t_curr[2] or 0))}")
 
 # ================= QARZI BORLAR =================
 @dp.message(F.text == "🤝 Qarzi borlar")
 async def handle_debtors(message: types.Message):
     uid = message.from_user.id
     conn = get_db(); cur = dict_cursor(conn)
-
     if uid in BOSS_IDS:
-        cur.execute("""
-            SELECT u.user_id, u.name as worker_name,
-                   ROUND(CAST(COALESCE(SUM(s.total),0) - COALESCE(SUM(s.cash),0) AS numeric), 2) as bal 
-            FROM sales s
-            JOIN users u ON s.worker_id = u.user_id
-            WHERE s.normalized_store IS NOT NULL AND s.normalized_store != ''
-            GROUP BY u.user_id, u.name
-            HAVING ROUND(CAST(COALESCE(SUM(s.total),0) - COALESCE(SUM(s.cash),0) AS numeric), 2) > 0
-            ORDER BY bal DESC
-        """)
+        cur.execute("""SELECT u.user_id, u.name, ROUND(CAST(COALESCE(SUM(s.total),0) - COALESCE(SUM(s.cash),0) AS numeric), 2) as bal 
+                       FROM sales s JOIN users u ON s.worker_id = u.user_id WHERE s.normalized_store IS NOT NULL 
+                       GROUP BY u.user_id, u.name HAVING bal > 0 ORDER BY bal DESC""")
         res = cur.fetchall()
-        if not res:
-            conn.close()
-            return await message.answer("✅ Hozircha qarzi bor ishchilar yo'q.")
-        out = "🤝 Qarzi bor ishchilar:\n"
-        for r in res: out += f"👤 {r['worker_name']} - {fmt(r['bal'])}\n"
-        out += f"\n💰 Umumiy qarz: {fmt(sum(r['bal'] for r in res))}"
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"👤 {r['worker_name']} ({fmt(r['bal'])})", callback_data=f"boss_debt_uid_{r['user_id']}")] for r in res])
+        if not res: conn.close(); return await message.answer("✅ Qarz yo'q.")
+        out = "🤝 Qarzi borlar:\n" + "\n".join([f"👤 {r[1]} - {fmt(r[2])}" for r in res])
+        out += f"\n💰 Umumiy: {fmt(sum(r[2] for r in res))}"
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"👤 {r[1]}", callback_data=f"boss_debt_uid_{r[0]}")] for r in res])
         await message.answer(out, reply_markup=kb)
     else:
-        cur.execute("SELECT normalized_store, ROUND(CAST(COALESCE(SUM(total),0)-COALESCE(SUM(cash),0) AS numeric), 2) as bal FROM sales WHERE worker_id = %s GROUP BY normalized_store HAVING ROUND(CAST(COALESCE(SUM(total),0)-COALESCE(SUM(cash),0) AS numeric), 2) > 0 ORDER BY bal DESC", (uid,))
+        cur.execute("SELECT normalized_store, ROUND(CAST(COALESCE(SUM(total),0)-COALESCE(SUM(cash),0) AS numeric), 2) as bal FROM sales WHERE worker_id = %s GROUP BY normalized_store HAVING bal > 0 ORDER BY bal DESC", (uid,))
         res = cur.fetchall()
-        if not res:
-            conn.close()
-            return await message.answer("✅ Sizning qarzi bor do'konlaringiz yo'q.")
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"📉 {r[0]} ({fmt(r['bal'])})", callback_data=f"store_{r[0]}")] for r in res])
+        if not res: conn.close(); return await message.answer("✅ Qarz yo'q.")
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"📉 {r[0]} ({fmt(r[1])})", callback_data=f"store_{r[0]}")] for r in res])
         await message.answer("🤝 Qarzi bor do'konlar:", reply_markup=kb)
     conn.close()
 
@@ -1022,89 +720,39 @@ async def handle_debtors(message: types.Message):
 async def boss_debt_detail(callback: CallbackQuery):
     await callback.answer()
     try:
-        worker_id = int(callback.data.replace("boss_debt_uid_", ""))
+        wid = int(callback.data.replace("boss_debt_uid_", ""))
         conn = get_db(); cur = dict_cursor(conn)
-        
-        cur.execute("SELECT name FROM users WHERE user_id = %s", (worker_id,))
-        w_row = cur.fetchone()
-        w_name = w_row['name'] if w_row else f"ID:{worker_id}"
-
-        cur.execute("""
-            SELECT normalized_store, 
-                   ROUND(CAST(COALESCE(SUM(total),0) AS numeric), 2) as t, 
-                   ROUND(CAST(COALESCE(SUM(cash),0) AS numeric), 2) as c
-            FROM sales 
-            WHERE worker_id = %s AND normalized_store IS NOT NULL AND normalized_store != ''
-            GROUP BY normalized_store
-            HAVING ROUND(CAST(COALESCE(SUM(total),0) AS numeric), 2) > ROUND(CAST(COALESCE(SUM(cash),0) AS numeric), 2)
-            ORDER BY (ROUND(CAST(COALESCE(SUM(total),0) AS numeric), 2) - ROUND(CAST(COALESCE(SUM(cash),0) AS numeric), 2)) DESC
-        """, (worker_id,))
-        stores = cur.fetchall()
-        conn.close()
-
-        out = f"👤 {w_name} ning qarzdor do'konlari:\n"
-        if not stores:
-            out += "✅ Hozircha aniq qarzi bor do'kon topilmadi."
-            kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Orqaga", callback_data="back_main")]])
-        else:
-            for s in stores:
-                bal = s['t'] - s['c']
-                out += f"🏪 {s['normalized_store']} | Qarz: {fmt(bal)}\n"
-            
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=f"📖 {s['normalized_store']} ko'rish", callback_data=f"boss_debt_store_{worker_id}_{s['normalized_store']}")]
-                for s in stores
-            ])
-            kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="back_main")])
-            
-        try:
-            await callback.message.edit_text(out, reply_markup=kb)
-        except Exception:
-            await callback.message.answer(out, reply_markup=kb)
-    except Exception as e:
-        await callback.answer(f"❌ Xatolik: {e}", show_alert=True)
+        cur.execute("SELECT name FROM users WHERE user_id = %s", (wid,))
+        w_name = (cur.fetchone() or {}).get('name', f"ID:{wid}")
+        cur.execute("""SELECT normalized_store, ROUND(CAST(COALESCE(SUM(total),0) AS numeric), 2) as t, ROUND(CAST(COALESCE(SUM(cash),0) AS numeric), 2) as c 
+                       FROM sales WHERE worker_id = %s AND normalized_store IS NOT NULL GROUP BY normalized_store HAVING t > c ORDER BY (t-c) DESC""", (wid,))
+        stores = cur.fetchall(); conn.close()
+        out = f"👤 {w_name} qarzlari:\n" + ("\n".join([f"🏪 {s['normalized_store']} | {fmt(s['t']-s['c'])}" for s in stores]) or "✅ Yo'q")
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"📖 {s['normalized_store']}", callback_data=f"boss_debt_store_{wid}_{s['normalized_store']}")] for s in stores])
+        kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️", callback_data="back_main")])
+        await callback.message.edit_text(out, reply_markup=kb)
+    except Exception as e: await callback.answer(f"❌ {e}", show_alert=True)
 
 @dp.callback_query(F.data.startswith("boss_debt_store_"))
 async def boss_debt_store_view(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
-    prefix = "boss_debt_store_"
-    data_str = callback.data.replace(prefix, "")
-    parts = data_str.split("_", 1)
-    
-    if len(parts) != 2: return
-    worker_id = int(parts[0])
-    store = parts[1]
-    
-    await state.update_data(debt_worker_id=worker_id, current_store=store)
-    
+    wid, store = callback.data.replace("boss_debt_store_", "").split("_", 1)
+    wid = int(wid)
+    await state.update_data(debt_worker_id=wid, current_store=store)
     conn = get_db(); cur = dict_cursor(conn)
-    cur.execute("SELECT COALESCE(SUM(total),0), COALESCE(SUM(cash),0) FROM sales WHERE normalized_store = %s AND worker_id = %s", (store, worker_id))
-    res_total = cur.fetchone()
-    cur.execute("SELECT txn_type, total, cash, date FROM sales WHERE normalized_store = %s AND worker_id = %s ORDER BY id DESC LIMIT 15", (store, worker_id))
-    history = cur.fetchall(); conn.close()
-    
-    total = res_total[0]; cash = res_total[1]; balance = total - cash
-    out = f"🏪 **{store.upper()}** hisoboti:\n💰 Umumiy savdo: {fmt(total)} | 💵 Yig'ilgan: {fmt(cash)}\n📉 **Qoldiq qarz: {fmt(balance)}**\n\n📜 Harakatlar tarixi:\n"
-    for h in history:
-        if h['txn_type'] in ['savdo', 'savdo_yangi']: 
-            out += f"📅 {h['date']} | 📦 +{fmt(h['total'])} (💵 {fmt(h['cash'])} naqt)\n"
-        elif h['txn_type'] == 'naqt': 
-            out += f"📅 {h['date']} | 💵 +{fmt(h['cash'])} (Naqt kiritildi)\n"
-        elif h['txn_type'] == 'qaytarish': 
-            out += f"📅 {h['date']} | 🔄 -{fmt(abs(h['total']))} (Qaytarildi)\n"
-            
+    cur.execute("SELECT COALESCE(SUM(total),0), COALESCE(SUM(cash),0) FROM sales WHERE normalized_store = %s AND worker_id = %s", (store, wid))
+    res = cur.fetchone()
+    cur.execute("SELECT txn_type, total, cash, date FROM sales WHERE normalized_store = %s AND worker_id = %s ORDER BY id DESC LIMIT 10", (store, wid))
+    hist = cur.fetchall(); conn.close()
+    out = f"🏪 **{store.upper()}**\n💰 {fmt(res[0])} | 💵 {fmt(res[1])} | 📉 {fmt(res[0]-res[1])}\n\n📜:\n"
+    out += "\n".join([f"📅 {h['date']} | {'📦' if h['txn_type']=='savdo' else '💵' if h['txn_type']=='naqt' else '🔄'} {fmt(h['total'] if h['txn_type']!='qaytarish' else -h['total'])}" for h in hist])
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💵 Naqt kiritish", callback_data="act_cash"),
-         InlineKeyboardButton(text="🔄 Qaytarish", callback_data="act_return")],
-        [InlineKeyboardButton(text="💰 Yangi savdo", callback_data="act_trade"),
-         InlineKeyboardButton(text="👤 Do'konchi", callback_data="act_owner")],
-        [InlineKeyboardButton(text="⬅️ Qarzdor do'konlar", callback_data=f"boss_debt_uid_{worker_id}")]
+        [InlineKeyboardButton(text="💵 Naqt", callback_data="act_cash"), InlineKeyboardButton(text="🔄 Qaytarish", callback_data="act_return")],
+        [InlineKeyboardButton(text="💰 Savdo", callback_data="act_trade"), InlineKeyboardButton(text="👤 Do'konchi", callback_data="act_owner")],
+        [InlineKeyboardButton(text="⬅️ Qarzdorlar", callback_data=f"boss_debt_uid_{wid}")]
     ])
-    
-    try:
-        await callback.message.edit_text(out, reply_markup=kb, parse_mode="Markdown")
-    except Exception:
-        await callback.message.answer(out, reply_markup=kb, parse_mode="Markdown")
+    try: await callback.message.edit_text(out, reply_markup=kb, parse_mode="Markdown")
+    except: await callback.message.answer(out, reply_markup=kb, parse_mode="Markdown")
 
 # ================= DO'KONLAR VA HARAKATLAR =================
 @dp.message(F.text == "🏪 Do'konlarim")
@@ -1114,10 +762,10 @@ async def stores_list_cmd(message: types.Message):
     conn = get_db(); cur = dict_cursor(conn)
     cur.execute("SELECT DISTINCT normalized_store FROM sales WHERE worker_id = %s ORDER BY normalized_store", (uid,))
     stores = cur.fetchall(); conn.close()
-    if not stores: return await message.answer("🏪 Hozircha do'konlar yo'q.")
+    if not stores: return await message.answer("🏪 Yo'q.")
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"🏪 {s[0]}", callback_data=f"store_{s[0]}")] for s in stores])
-    kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="back_main")])
-    await message.answer("🏪 Do'konlar ro'yxati:", reply_markup=kb)
+    kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️", callback_data="back_main")])
+    await message.answer("🏪 Do'konlarim:", reply_markup=kb)
 
 @dp.callback_query(F.data == "stores_list")
 async def stores_list_cb(callback: CallbackQuery): 
@@ -1125,12 +773,12 @@ async def stores_list_cb(callback: CallbackQuery):
     if uid in BOSS_IDS: return
     w_cond, w_params = get_worker_filter(uid)
     conn = get_db(); cur = dict_cursor(conn)
-    cur.execute(f"SELECT DISTINCT normalized_store FROM sales WHERE 1=1 {w_cond} ORDER BY normalized_store", w_params)
+    cur.execute("SELECT DISTINCT normalized_store FROM sales WHERE 1=1 " + w_cond + " ORDER BY normalized_store", w_params)
     stores = cur.fetchall(); conn.close()
-    if not stores: return await callback.answer("🏪 Hozircha do'konlar yo'q.")
+    if not stores: return await callback.answer("🏪 Yo'q.")
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"🏪 {s['normalized_store']}", callback_data=f"store_{s['normalized_store']}")] for s in stores])
-    kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="back_main")])
-    await callback.message.edit_text("🏪 Do'konlar ro'yxati:", reply_markup=kb)
+    kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️", callback_data="back_main")])
+    await callback.message.edit_text("🏪 Do'konlar:", reply_markup=kb)
 
 @dp.message(F.text == "🔍 Do'kon qidirish")
 async def search_prompt(message: types.Message, state: FSMContext):
@@ -1148,9 +796,9 @@ async def search_handle(message: types.Message, state: FSMContext):
     search_term = f"%{message.text.lower().strip()}%"
     params = (search_term,) + w_params
     conn = get_db(); cur = dict_cursor(conn)
-    cur.execute(f"SELECT DISTINCT normalized_store FROM sales WHERE normalized_store LIKE %s {w_cond}", params)
+    cur.execute("SELECT DISTINCT normalized_store FROM sales WHERE normalized_store LIKE %s " + w_cond, params)
     res = cur.fetchall(); conn.close()
-    if not res: return await message.answer("🔍 Hech narsa topilmadi.")
+    if not res: return await message.answer("🔍 Topilmadi.")
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"🏪 {r[0]}", callback_data=f"store_{r[0]}")] for r in res])
     await message.answer("🔍 Natijalar:", reply_markup=kb)
     await state.clear()
@@ -1158,52 +806,32 @@ async def search_handle(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data.startswith("store_"))
 async def store_details(callback: CallbackQuery, state: FSMContext):
     store = callback.data[6:]
-    if not store: return await callback.answer("⚠️ Xatolik: Do'kon nomi topilmadi.", show_alert=True)
+    if not store: return await callback.answer("⚠️ Xato", show_alert=True)
     await state.update_data(current_store=store)
-    
     data = await state.get_data()
     uid = data.get('debt_worker_id', callback.from_user.id)
     if data.get('debt_worker_id'): await state.update_data(debt_worker_id=None)
-    
     w_cond, w_params = get_worker_filter(uid)
     full_params = (store,) + w_params
     conn = get_db(); cur = dict_cursor(conn)
-    cur.execute(f"SELECT COALESCE(SUM(total),0), COALESCE(SUM(cash),0) FROM sales WHERE normalized_store = %s {w_cond}", full_params)
-    res_total = cur.fetchone()
-    cur.execute(f"SELECT txn_type, total, cash, date FROM sales WHERE normalized_store = %s {w_cond} ORDER BY id DESC LIMIT 15", full_params)
-    history = cur.fetchall(); conn.close()
-    total = res_total[0]; cash = res_total[1]; balance = total - cash
-    out = f"🏪 **{store.upper()}** hisoboti:\n💰 Umumiy savdo: {fmt(total)} | 💵 Yig'ilgan: {fmt(cash)}\n📉 **Qoldiq qarz: {fmt(balance)}**\n\n📜 Harakatlar tarixi:\n"
-    for h in history:
-        if h['txn_type'] in ['savdo', 'savdo_yangi']: 
-            out += f"📅 {h['date']} | 📦 +{fmt(h['total'])} (💵 {fmt(h['cash'])} naqt)\n"
-        elif h['txn_type'] == 'naqt': 
-            out += f"📅 {h['date']} | 💵 +{fmt(h['cash'])} (Naqt kiritildi)\n"
-        elif h['txn_type'] == 'qaytarish': 
-            out += f"📅 {h['date']} | 🔄 -{fmt(abs(h['total']))} (Qaytarildi)\n"
-            
-    back_kb = []
-    if data.get('debt_worker_id'):
-        back_kb.append([InlineKeyboardButton(text="⬅️ Qarzdor do'konlar", callback_data=f"boss_debt_uid_{data.get('debt_worker_id')}")])
-    elif uid in BOSS_IDS:
-        back_kb.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="back_main")])
-    else:
-        back_kb.append([InlineKeyboardButton(text="🔍 Boshqa do'kon", callback_data="stores_list")])
-        
+    cur.execute("SELECT COALESCE(SUM(total),0), COALESCE(SUM(cash),0) FROM sales WHERE normalized_store = %s " + w_cond, full_params)
+    res = cur.fetchone()
+    cur.execute("SELECT txn_type, total, cash, date FROM sales WHERE normalized_store = %s " + w_cond + " ORDER BY id DESC LIMIT 10", full_params)
+    hist = cur.fetchall(); conn.close()
+    out = f"🏪 **{store.upper()}**\n💰 {fmt(res[0])} | 💵 {fmt(res[1])} | 📉 {fmt(res[0]-res[1])}\n\n📜:\n"
+    out += "\n".join([f"📅 {h['date']} | {'📦' if h['txn_type']=='savdo' else '💵' if h['txn_type']=='naqt' else '🔄'} {fmt(h['total'] if h['txn_type']!='qaytarish' else -h['total'])}" for h in hist])
+    back_kb = [InlineKeyboardButton(text="⬅️ Qarzdorlar", callback_data=f"boss_debt_uid_{data.get('debt_worker_id')}")] if data.get('debt_worker_id') else [InlineKeyboardButton(text="⬅️", callback_data="back_main")]
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💵 Naqt kiritish", callback_data="act_cash"),
-         InlineKeyboardButton(text="🔄 Qaytarish", callback_data="act_return")],
-        [InlineKeyboardButton(text="💰 Yangi savdo", callback_data="act_trade"),
-         InlineKeyboardButton(text="👤 Do'konchi", callback_data="act_owner")]
-    ] + back_kb)
-    
+        [InlineKeyboardButton(text="💵 Naqt", callback_data="act_cash"), InlineKeyboardButton(text="🔄 Qaytarish", callback_data="act_return")],
+        [InlineKeyboardButton(text="💰 Savdo", callback_data="act_trade"), InlineKeyboardButton(text="👤 Do'konchi", callback_data="act_owner")]
+    ] + [back_kb])
     await callback.message.edit_text(out, reply_markup=kb, parse_mode="Markdown")
 
 @dp.callback_query(F.data == "act_cash")
 async def start_cash(callback: CallbackQuery, state: FSMContext):
     uid = callback.from_user.id
     if uid in BOSS_IDS: return
-    await callback.message.answer("💵 Qancha naqt kiritasiz? (oxiriga qisqa sana yozsangiz bo'ladi, masalan: 5000 11.01.25)", reply_markup=get_back_kb())
+    await callback.message.answer("💵 Summa (masalan: 5000 11.01.25):", reply_markup=get_back_kb())
     await state.set_state(AppStates.add_cash)
 
 @dp.message(AppStates.add_cash)
@@ -1211,19 +839,15 @@ async def process_cash(message: types.Message, state: FSMContext):
     uid = message.from_user.id
     if uid in BOSS_IDS: return
     if message.text == "⬅️ Orqaga": await state.clear(); return await start_cmd(message, state)
-    
     date_str, clean_text = extract_date(message.text)
-    if not clean_text.replace('.','',1).isdigit(): return await message.answer("⚠️ Faqat raqam va ixtiyoriy sana!")
-    
-    amount = float(clean_text)
-    final_date = date_str if date_str else datetime.now().strftime("%d.%m.%Y %H:%M")
-    await handle_store_action(message, state, "naqt", amount, date_override=final_date)
+    if not clean_text.replace('.','',1).isdigit(): return await message.answer("⚠️ Faqat raqam!")
+    await handle_store_action(message, state, "naqt", float(clean_text), date_override=date_str or datetime.now().strftime("%d.%m.%Y %H:%M"))
 
 @dp.callback_query(F.data == "act_return")
 async def start_return(callback: CallbackQuery, state: FSMContext):
     uid = callback.from_user.id
     if uid in BOSS_IDS: return
-    await callback.message.answer("🔄 Qancha qaytarilasiz? (masalan: 200 11.01.25):", reply_markup=get_back_kb())
+    await callback.message.answer("🔄 Summa (masalan: 200 11.01.25):", reply_markup=get_back_kb())
     await state.set_state(AppStates.add_return)
 
 @dp.message(AppStates.add_return)
@@ -1231,19 +855,15 @@ async def process_return(message: types.Message, state: FSMContext):
     uid = message.from_user.id
     if uid in BOSS_IDS: return
     if message.text == "⬅️ Orqaga": await state.clear(); return await start_cmd(message, state)
-    
     date_str, clean_text = extract_date(message.text)
-    if not clean_text.replace('.','',1).isdigit(): return await message.answer("⚠️ Faqat raqam va ixtiyoriy sana!")
-    
-    amount = float(clean_text)
-    final_date = date_str if date_str else datetime.now().strftime("%d.%m.%Y %H:%M")
-    await handle_store_action(message, state, "qaytarish", amount, date_override=final_date)
+    if not clean_text.replace('.','',1).isdigit(): return await message.answer("⚠️ Faqat raqam!")
+    await handle_store_action(message, state, "qaytarish", float(clean_text), date_override=date_str or datetime.now().strftime("%d.%m.%Y %H:%M"))
 
 @dp.callback_query(F.data == "act_trade")
 async def start_trade(callback: CallbackQuery, state: FSMContext):
     uid = callback.from_user.id
     if uid in BOSS_IDS: return
-    await callback.message.answer("💰 Faqat summani yozing (masalan: 1000 11.01.25):", reply_markup=get_back_kb())
+    await callback.message.answer("💰 Summa (masalan: 1000 11.01.25):", reply_markup=get_back_kb())
     await state.set_state(AppStates.add_new_sale_store)
 
 @dp.message(AppStates.add_new_sale_store)
@@ -1251,38 +871,28 @@ async def process_new_sale_store(message: types.Message, state: FSMContext):
     uid = message.from_user.id
     if uid in BOSS_IDS: return
     if message.text == "⬅️ Orqaga": await state.clear(); return await start_cmd(message, state)
-    
     data = await state.get_data()
     store = data.get('current_store')
-    if not store: return await message.answer("⚠️ Xatolik: Do'kon tanlanmagan.")
-    
+    if not store: return await message.answer("⚠️ Do'kon tanlanmagan.")
     date_str, clean_text = extract_date(message.text)
-    if not clean_text.replace('.','',1).isdigit(): return await message.answer("⚠️ Faqat raqam va ixtiyoriy sana!")
-    
-    amount = float(clean_text)
-    final_date = date_str if date_str else datetime.now().strftime("%d.%m.%Y %H:%M")
-    await handle_store_action(message, state, "savdo_yangi", amount, store=store, date_override=final_date)
+    if not clean_text.replace('.','',1).isdigit(): return await message.answer("⚠️ Faqat raqam!")
+    await handle_store_action(message, state, "savdo_yangi", float(clean_text), store=store, date_override=date_str or datetime.now().strftime("%d.%m.%Y %H:%M"))
 
 async def handle_store_action(message: types.Message, state: FSMContext, t_type: str, amount: float, store: str = None, date_override: str = None):
     if not store:
         data = await state.get_data()
         store = data.get('current_store')
-        if not store: return await message.answer("⚠️ Xatolik: Do'kon tanlanmagan.")
-        
+        if not store: return await message.answer("⚠️ Do'kon tanlanmagan.")
     now_str = date_override or datetime.now().strftime("%d.%m.%Y %H:%M")
     conn = get_db(); cur = dict_cursor(conn)
     if t_type == "naqt": vals = (store, store, 0, amount, -amount, 'naqt', now_str, message.from_user.id, message.from_user.full_name)
     elif t_type == "qaytarish": vals = (store, store, -amount, 0, -amount, 'qaytarish', now_str, message.from_user.id, message.from_user.full_name)
-    elif t_type == "savdo_yangi": vals = (store, store, amount, 0, amount, 'savdo', now_str, message.from_user.id, message.from_user.full_name)
-    else: return await message.answer("⚠️ Noto'g'ri amal.")
+    else: vals = (store, store, amount, 0, amount, 'savdo', now_str, message.from_user.id, message.from_user.full_name)
     cur.execute("INSERT INTO sales (store_name, normalized_store, total, cash, debt, txn_type, date, worker_id, worker_name) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id", vals)
     sale_id = cur.fetchone()[0]; conn.commit(); conn.close()
-    
     await notify_boss(message.from_user.id, store, amount if t_type!='qaytarish' else -amount, amount if t_type=='naqt' else 0, t_type, now_str)
-    
-    txt = f"✅ {fmt(amount)} naqt qabul qilindi! ({now_str.split()[0]})" if t_type == "naqt" else (f"✅ {fmt(amount)} qaytarildi!" if t_type == "qaytarish" else f"✅ {fmt(amount)} savdo qo'shildi!")
-    cancel_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Xato bo'lsa bekor qilish", callback_data=f"cancel_req_{sale_id}")]])
-    await message.answer(txt, reply_markup=cancel_kb)
+    txt = f"✅ {fmt(amount)} qabul! ({now_str.split()[0]})" if t_type == "naqt" else (f"✅ {fmt(amount)} qaytarildi!" if t_type == "qaytarish" else f"✅ {fmt(amount)} savdo!")
+    await message.answer(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Bekor", callback_data=f"cancel_req_{sale_id}")]]))
     await state.clear()
     if store: await send_store_details(message, store, state)
 
@@ -1293,22 +903,16 @@ async def send_store_details(message: types.Message, store: str, state: FSMConte
     w_cond, w_params = get_worker_filter(uid)
     full_params = (store,) + w_params
     conn = get_db(); cur = dict_cursor(conn)
-    cur.execute(f"SELECT COALESCE(SUM(total),0), COALESCE(SUM(cash),0) FROM sales WHERE normalized_store = %s {w_cond}", full_params)
+    cur.execute("SELECT COALESCE(SUM(total),0), COALESCE(SUM(cash),0) FROM sales WHERE normalized_store = %s " + w_cond, full_params)
     res = cur.fetchone()
-    total = res[0]; cash = res[1]; balance = total - cash
-    cur.execute(f"SELECT txn_type, total, cash, date FROM sales WHERE normalized_store = %s {w_cond} ORDER BY id DESC LIMIT 15", full_params)
-    history = cur.fetchall(); conn.close()
-    out = f"🏪 **{store.upper()}** hisoboti:\n💰 Umumiy savdo: {fmt(total)} | 💵 Yig'ilgan: {fmt(cash)}\n📉 **Qoldiq qarz: {fmt(balance)}**\n\n📜 Harakatlar tarixi:\n"
-    for h in history:
-        if h['txn_type'] == 'savdo': out += f"📅 {h['date']} | 📦 +{fmt(h['total'])} (Savdo)\n"
-        elif h['txn_type'] == 'naqt': out += f"📅 {h['date']} | 💵 +{fmt(h['cash'])} (Naqt kiritildi)\n"
-        elif h['txn_type'] == 'qaytarish': out += f"📅 {h['date']} | 🔄 -{fmt(abs(h['total']))} (Qaytarildi)\n"
+    cur.execute("SELECT txn_type, total, cash, date FROM sales WHERE normalized_store = %s " + w_cond + " ORDER BY id DESC LIMIT 10", full_params)
+    hist = cur.fetchall(); conn.close()
+    out = f"🏪 **{store.upper()}**\n💰 {fmt(res[0])} | 💵 {fmt(res[1])} | 📉 {fmt(res[0]-res[1])}\n\n📜:\n"
+    out += "\n".join([f"📅 {h['date']} | {fmt(h['total'] if h['txn_type']!='qaytarish' else -h['total'])}" for h in hist])
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💵 Naqt kiritish", callback_data="act_cash"),
-         InlineKeyboardButton(text="🔄 Qaytarish", callback_data="act_return")],
-        [InlineKeyboardButton(text="💰 Yangi savdo", callback_data="act_trade"),
-         InlineKeyboardButton(text="👤 Do'konchi", callback_data="act_owner")],
-        [InlineKeyboardButton(text="🔍 Boshqa do'kon", callback_data="stores_list")]
+        [InlineKeyboardButton(text="💵 Naqt", callback_data="act_cash"), InlineKeyboardButton(text="🔄 Qaytarish", callback_data="act_return")],
+        [InlineKeyboardButton(text="💰 Savdo", callback_data="act_trade"), InlineKeyboardButton(text="👤 Do'konchi", callback_data="act_owner")],
+        [InlineKeyboardButton(text="🔍 Boshqa", callback_data="stores_list")]
     ])
     await message.answer(out, reply_markup=kb, parse_mode="Markdown")
 
@@ -1317,15 +921,10 @@ async def send_owner_info(target, store, state: FSMContext):
     conn = get_db(); cur = dict_cursor(conn)
     cur.execute("SELECT owner_name, phone, location FROM stores_info WHERE normalized_store = %s", (store,))
     info = cur.fetchone(); conn.close()
-    name = info['owner_name'] if info and info['owner_name'] else "⬜ Kiritilmagan"
-    phone = info['phone'] if info and info['phone'] else "⬜ Kiritilmagan"
-    loc = info['location'] if info and info['location'] else "⬜ Kiritilmagan"
-    out = f"👤 **Do'konchi ma'lumotlari** (`{store}`):\n📛 Ism: `{name}`\n📞 Telefon: `{phone}`\n📍 Manzil: `{loc}`"
+    out = f"👤 **{store}**\n📛 {info['owner_name'] if info else '⬜'}\n📞 {info['phone'] if info else '⬜'}\n📍 {info['location'] if info else '⬜'}"
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✏️ Ism o'zgartirish", callback_data="edit_name"),
-         InlineKeyboardButton(text="✏️ Telefon", callback_data="edit_phone")],
-        [InlineKeyboardButton(text="✏️ Manzil", callback_data="edit_loc"),
-         InlineKeyboardButton(text="⬅️ Orqaga", callback_data=f"store_{store}")]
+        [InlineKeyboardButton(text="✏️ Ism", callback_data="edit_name"), InlineKeyboardButton(text="✏️ Tel", callback_data="edit_phone")],
+        [InlineKeyboardButton(text="✏️ Manzil", callback_data="edit_loc"), InlineKeyboardButton(text="⬅️", callback_data=f"store_{store}")]
     ])
     await msg.answer(out, reply_markup=kb, parse_mode="Markdown")
 
@@ -1342,36 +941,29 @@ async def edit_owner(callback: CallbackQuery, state: FSMContext):
     if uid in BOSS_IDS: return
     field = callback.data.replace("edit_", "")
     await state.update_data(edit_field=field)
-    titles = {"name": "Ism", "phone": "Telefon", "loc": "Manzil"}
-    title_text = titles.get(field, "ma'lumot")
-    await callback.message.answer(f"✍️ Yangi {title_text} ni yozing:", reply_markup=get_back_kb())
+    await callback.message.answer(f"✍️ Yangi {field}:", reply_markup=get_back_kb())
     await state.set_state(AppStates.edit_store_info)
 
 @dp.message(AppStates.edit_store_info)
 async def save_owner_info(message: types.Message, state: FSMContext):
     uid = message.from_user.id
     if uid in BOSS_IDS: return
-    if message.text == "⬅️ Orqaga": 
-        await state.clear()
-        return await start_cmd(message, state)
+    if message.text == "⬅️ Orqaga": await state.clear(); return await start_cmd(message, state)
     data = await state.get_data()
-    store = data.get('current_store', '')
-    field = data.get('edit_field', 'name')
-    col_map = {"name": "owner_name", "phone": "phone", "loc": "location"}
-    col = col_map.get(field, "owner_name")
+    store, field = data.get('current_store', ''), data.get('edit_field', 'name')
+    col = {"name": "owner_name", "phone": "phone", "loc": "location"}.get(field, "owner_name")
     conn = get_db(); cur = dict_cursor(conn)
-    cur.execute("INSERT INTO stores_info (normalized_store, owner_name, phone, location) VALUES (%s, %s, %s, %s) ON CONFLICT (normalized_store) DO UPDATE SET " + col + " = EXCLUDED." + col, 
-                (store, '' if col!='owner_name' else message.text.strip(), '' if col!='phone' else message.text.strip(), '' if col!='location' else message.text.strip()))
+    cur.execute(f"INSERT INTO stores_info (normalized_store, owner_name, phone, location) VALUES (%s, %s, %s, %s) ON CONFLICT (normalized_store) DO UPDATE SET {col} = EXCLUDED.{col}", 
+                (store, message.text.strip() if col=='owner_name' else '', message.text.strip() if col=='phone' else '', message.text.strip() if col=='location' else ''))
     conn.commit(); conn.close()
-    await message.answer("✅ Saqlandi!")
-    await state.clear()
+    await message.answer("✅ Saqlandi!"); await state.clear()
     await send_owner_info(message, store, state)
 
 @dp.message(Command("delete_store"))
 async def delete_store_command(message: types.Message):
     if message.from_user.id not in BOSS_IDS: return
     args = message.text.split()
-    if len(args) < 2: return await message.answer("❌ Misol: /delete_store qatortol")
+    if len(args) < 2: return await message.answer("❌ /delete_store dokon")
     conn = get_db(); cur = dict_cursor(conn)
     cur.execute("DELETE FROM sales WHERE normalized_store = %s", (args[1],))
     cur.execute("DELETE FROM stores_info WHERE normalized_store = %s", (args[1],))
@@ -1382,29 +974,26 @@ async def delete_store_command(message: types.Message):
 async def delete_worker_command(message: types.Message):
     if message.from_user.id not in BOSS_IDS: return
     args = message.text.split()
-    if len(args) < 2: return await message.answer("❌ Misol: /delete_worker 123456789")
+    if len(args) < 2: return await message.answer("❌ /delete_worker id")
     try:
         wid = int(args[1])
-        if wid in BOSS_IDS: return await message.answer("⚠️ Boss ni o'chirib bo'lmaydi!")
+        if wid in BOSS_IDS: return await message.answer("⚠️ Boss o'chirilmaydi!")
         conn = get_db(); cur = dict_cursor(conn)
         cur.execute("SELECT name FROM users WHERE user_id = %s AND role = 'worker'", (wid,))
-        if not cur.fetchone():
-            conn.close()
-            return await message.answer("⚠️ Ishchi topilmadi.")
+        if not cur.fetchone(): conn.close(); return await message.answer("⚠️ Topilmadi.")
         cur.execute("DELETE FROM deletion_requests WHERE worker_id = %s", (wid,))
         cur.execute("DELETE FROM sales WHERE worker_id = %s", (wid,))
         cur.execute("DELETE FROM users WHERE user_id = %s", (wid,))
         conn.commit(); conn.close()
-        await message.answer(f"✅ Ishchi ID: `{wid}` butunlay o'chirildi!\n🗑️ Barcha savdolari, qarzlari, tarixi tozalandi.\nQayta qo'shsangiz yangi ishchi bo'lib boshlaydi.", parse_mode="Markdown")
-    except Exception as e: 
-        await message.answer(f"❌ Xatolik: {e}")
+        await message.answer(f"✅ {wid} tozalandi!", parse_mode="Markdown")
+    except Exception as e: await message.answer(f"❌ {e}")
 
 @dp.message(F.text == "✍️ Savdo qo'shish")
 async def trade_init(message: types.Message, state: FSMContext):
     uid = message.from_user.id
     if uid in BOSS_IDS: return
     await state.clear()
-    await message.answer("📝 Misol: `Ali market 5000` yoki `Ali 5000 naxt 300 11.01.25`", reply_markup=get_back_kb())
+    await message.answer("📝 `Ali market 5000` yoki `Ali 5000 naxt 300 11.01.25`", reply_markup=get_back_kb())
     await state.set_state(AppStates.waiting_trade)
 
 @dp.message(AppStates.waiting_trade)
@@ -1412,39 +1001,26 @@ async def handle_trade(message: types.Message, state: FSMContext):
     uid = message.from_user.id
     if uid in BOSS_IDS: return
     if message.text == "⬅️ Orqaga": await state.clear(); return await start_cmd(message, state)
-    msg = await message.answer("🤖 AI tahlil qilmoqda...")
+    msg = await message.answer("🤖 Tahlil...")
     try:
         res = client.chat.completions.create(model="gpt-4o-mini", messages=[
-            {"role": "system", "content": """Sen savdo matnini tahlil qiluvchi AI yordamchisan.
-Vazifang: Matndan do'kon(store), jami summa(total), naqt(cash) va ixtiyoriy sana(date) ajratish.
-Qoidalar:
-1. "naxt", "nax", "next", "naqt", "oldim", "pul", "qo'lda" so'zlari yoki ularga yopishgan raqamlar "naqt" ni bildiradi.
-2. Agar faqat bitta raqam bo'lsa -> total = raqam, cash = 0.
-3. Sana formati: DD.MM.YY yoki DD.MM.YYYY (masalan: 11.01.25 yoki 11.01.2025). Agar sanasi bo'lmasa null.
-4. Do'kon nomini kichik harfda, bo'sh joylarsiz qaytar.
-5. Faqat JSON formatda qaytar: {"store": "string", "total": number, "cash": number, "date": "DD.MM.YY" yoki null}"""},
+            {"role": "system", "content": """Sen savdo tahlilchisisiz. Matndan store, total, cash, date ajrat.
+Qoidalar: 1. "naxt/naqt/pul" yonidagi raqam cash. 2. Yagona raqam bo'lsa total=raqam, cash=0. 3. Sana: DD.MM.YY. 4. JSON: {"store":"str","total":num,"cash":num,"date":"DD.MM.YY" yoki null}"""},
             {"role": "user", "content": message.text}
         ], response_format={"type": "json_object"})
         d = json.loads(res.choices[0].message.content)
         store = normalize(d.get("store", "noma'lum"))
-        total = float(d.get("total", 0)); cash = float(d.get("cash", 0)); debt = round(total - cash, 2)
-        
-        input_date = d.get("date")
-        date_str = input_date if input_date and re.match(r'^\d{2}\.\d{2}\.\d{2,4}$', str(input_date)) else datetime.now().strftime("%d.%m.%Y")
+        total, cash = float(d.get("total", 0)), float(d.get("cash", 0))
+        date_str = d.get("date") if d.get("date") and re.match(r'^\d{2}\.\d{2}\.\d{2,4}$', str(d.get("date"))) else datetime.now().strftime("%d.%m.%Y")
         now_str = f"{date_str} {datetime.now().strftime('%H:%M')}"
-        
         conn = get_db(); cur = dict_cursor(conn)
-        cur.execute("""INSERT INTO sales (store_name, normalized_store, total, cash, debt, txn_type, date, worker_id, worker_name) 
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
-                    (store, store, total, cash, debt, "savdo", now_str, message.from_user.id, message.from_user.full_name))
+        cur.execute("INSERT INTO sales (store_name, normalized_store, total, cash, debt, txn_type, date, worker_id, worker_name) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                    (store, store, total, cash, round(total-cash,2), "savdo", now_str, uid, message.from_user.full_name))
         sale_id = cur.fetchone()[0]; conn.commit(); conn.close()
-        
-        await notify_boss(message.from_user.id, store, total, cash, "savdo", now_str)
-        
-        await msg.edit_text(f"✅ Saqlandi!\n🏪 Dokon nomi - `{store}`\n💰 Savdo - {fmt(total)}\n💵 Naqt - {fmt(cash)}\n📉 Qarz: {fmt(debt)}\n📅 Sana: {date_str}", 
-                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Xato bo'lsa bekor qilish", callback_data=f"cancel_req_{sale_id}")]]))
-    except Exception as e: 
-        await msg.edit_text(f"❌ AI xato: {e}\nFormat: `dokon summa [naxt sum] [sana]`")
+        await notify_boss(uid, store, total, cash, "savdo", now_str)
+        await msg.edit_text(f"✅ Saqlandi!\n🏪 {store}\n💰 {fmt(total)} | 💵 {fmt(cash)} | 📉 {fmt(total-cash)}\n📅 {date_str}", 
+                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Bekor", callback_data=f"cancel_req_{sale_id}")]]))
+    except Exception as e: await msg.edit_text(f"❌ {e}")
     await state.clear()
 
 @dp.callback_query(F.data.startswith("cancel_req_"))
@@ -1455,15 +1031,15 @@ async def request_cancel(callback: CallbackQuery):
     conn = get_db(); cur = dict_cursor(conn)
     cur.execute("SELECT store_name, total, cash, date FROM sales WHERE id = %s AND worker_id = %s", (sale_id, uid))
     sale = cur.fetchone()
-    if not sale: return await callback.answer("⚠️ Bu amal allaqachon o'chirilgan yoki topilmadi.", show_alert=True)
+    if not sale: return await callback.answer("⚠️ Topilmadi.", show_alert=True)
     cur.execute("INSERT INTO deletion_requests (worker_id, sale_id, request_date) VALUES (%s,%s,%s)", (uid, sale_id, datetime.now().strftime("%d.%m.%Y %H:%M")))
     conn.commit(); conn.close()
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Bekor qilsin", callback_data=f"approve_{sale_id}"), InlineKeyboardButton(text="❌ Qoldirsin", callback_data=f"reject_{sale_id}")]])
-    notif = f"🔔 **O'chirish so'rovi**\n👤 Ishchi: {callback.from_user.full_name} (ID: `{uid}`)\n🏪 Do'kon: {sale['store_name']}\n💰 Summa: {fmt(sale['total'])} | 💵 Naqt: {fmt(sale['cash'])}\n📅 Sana: {sale['date']}"
-    for boss_id in BOSS_IDS:
-        try: await bot.send_message(boss_id, notif, reply_markup=kb, parse_mode="Markdown")
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Bekor", callback_data=f"approve_{sale_id}"), InlineKeyboardButton(text="❌ Qoldir", callback_data=f"reject_{sale_id}")]])
+    notif = f"🔔 **O'chirish**\n👤 {callback.from_user.full_name} | 🏪 {sale['store_name']} | 💰 {fmt(sale['total'])} | 📅 {sale['date']}"
+    for bid in BOSS_IDS:
+        try: await bot.send_message(bid, notif, reply_markup=kb, parse_mode="Markdown")
         except: pass
-    await callback.message.edit_text(f"✅ Bekor qilish so'rovi bossga yuborildi.\nBoss tasdiqlagacha kuting...", reply_markup=None)
+    await callback.message.edit_text("✅ So'rov yuborildi.", reply_markup=None)
 
 @dp.callback_query(F.data.startswith("approve_") | F.data.startswith("reject_"))
 async def handle_deletion_request(callback: CallbackQuery):
@@ -1472,19 +1048,17 @@ async def handle_deletion_request(callback: CallbackQuery):
     action, sale_id = callback.data.split("_"); sale_id = int(sale_id)
     conn = get_db(); cur = dict_cursor(conn)
     cur.execute("SELECT worker_id FROM deletion_requests WHERE sale_id = %s", (sale_id,))
-    req = cur.fetchone(); worker_id = req[0] if req else None
+    wid = (cur.fetchone() or {}).get('worker_id')
     if action == "approve":
         cur.execute("DELETE FROM sales WHERE id = %s", (sale_id,))
         cur.execute("DELETE FROM deletion_requests WHERE sale_id = %s", (sale_id,))
-        conn.commit()
-        await callback.message.edit_text(f"✅ Bekor qilish tasdiqlandi!\nSavdo ID: `{sale_id}` o'chirildi.")
-        if worker_id: await bot.send_message(worker_id, "✅ Boss so'rovingizni tasdiqladi. Oxirgi amal bekor qilindi.")
+        txt = "✅ Bekor qilindi."
     else:
         cur.execute("UPDATE deletion_requests SET status = 'rejected' WHERE sale_id = %s", (sale_id,))
-        conn.commit()
-        await callback.message.edit_text(f"❌ Rad etildi.\nSavdo o'zgarishsiz qoldi.")
-        if worker_id: await bot.send_message(worker_id, "❌ Boss so'rovingizni rad etdi. Savdo saqlanib qoldi.")
-    conn.close()
+        txt = "❌ Rad etildi."
+    conn.commit(); conn.close()
+    await callback.message.edit_text(txt)
+    if wid: await bot.send_message(wid, txt.replace("✅", "Boss tasdiqladi").replace("❌", "Boss rad etdi"))
 
 @dp.message(F.text)
 async def worker_info(message: types.Message, state: FSMContext):
@@ -1497,7 +1071,7 @@ async def worker_info(message: types.Message, state: FSMContext):
     if w:
         cur.execute("SELECT COALESCE(SUM(total),0), COUNT(id) FROM sales WHERE worker_id = %s", (w['user_id'],))
         r = cur.fetchone(); conn.close()
-        await message.answer(f"👤 {w['name']}\n📊 Jami savdo: {fmt(r[0])}\n🧾 Savdolar soni: {r[1] or 0}", reply_markup=get_back_kb())
+        await message.answer(f"👤 {w['name']}\n📊 Savdo: {fmt(r[0])}\n🧾 Soni: {r[1]}", reply_markup=get_back_kb())
 
 @dp.callback_query(F.data == "back_main")
 async def back_main(callback: CallbackQuery, state: FSMContext):
@@ -1508,26 +1082,21 @@ async def back_main(callback: CallbackQuery, state: FSMContext):
         conn = get_db(); cur = dict_cursor(conn)
         cur.execute("SELECT name, active FROM users WHERE user_id = %s", (uid,))
         user = cur.fetchone(); conn.close()
-        
         if uid in BOSS_IDS:
-            kb = get_boss_menu()
-            text = "Xush kelibsiz, Boss 👑"
+            kb, text = get_boss_menu(), "Xush kelibsiz, Boss 👑"
         elif user and user['active'] == 0:
-            kb = get_back_kb()
-            text = "🚫 Hisobingiz bloklan."
+            kb, text = get_back_kb(), "🚫 Blok"
         else:
-            kb = get_worker_menu() if user else ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⏳ Kutilmoqda...")]], resize_keyboard=True)
-            text = f"Assalomu alaykum, {user['name'] or 'Ishchi'}!" if user else f"Siz ro'yxatda yo'qsiz.\n🆔 ID: {uid}"
-            
-        await callback.message.edit_text(text, reply_markup=kb)
-    except Exception:
-        kb = get_boss_menu() if uid in BOSS_IDS else get_worker_menu()
+            kb = get_worker_menu() if user else ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⏳")]], resize_keyboard=True)
+            text = f"Salom, {user['name'] or 'Ishchi'}!" if user else f"ID: {uid}"
+        # ✅ edit_text o'rniga answer ishlatildi
         await callback.message.answer(text, reply_markup=kb)
+    except:
+        await callback.message.answer("⬅️", reply_markup=get_boss_menu() if uid in BOSS_IDS else get_worker_menu())
 
 async def main():
     init_db()
     print("✅ Bot ishga tushdi 🚀")
-    print("💡 Telegramda /start yuboring")
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 if __name__ == "__main__":
