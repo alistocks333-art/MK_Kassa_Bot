@@ -317,7 +317,6 @@ async def process_fire_worker(callback: CallbackQuery):
 def get_ai_questions_keyboard(is_boss=True):
     """AI uchun savollar klaviaturasi"""
     if is_boss:
-        # Boss uchun savollar
         questions = [
             ["📊 Bugungi kassa qancha?", "💰 Bu oy qancha savdo?"],
             ["🏆 Eng yaxshi ishchi kim?", "💸 Eng ko'p qarzidor do'kon?"],
@@ -325,46 +324,44 @@ def get_ai_questions_keyboard(is_boss=True):
             ["📅 Oylik hisobot", "📈 Umumiy statistika"]
         ]
     else:
-        # Ishchi uchun savollar
         questions = [
             ["📊 Bugun qancha savdo?", "💰 Bu oy qancha yig'dim?"],
             ["💳 Qarzi bor do'konlarim?", "🏆 Eng yaxshi do'konim?"],
-            ["📅 Oylik hisobotim", "📈 Umumiy statistikam"]
+            ["📊 O'tgan oy vs Bu oy", "📅 Oylik hisobotim"],
+            ["📈 Umumiy statistikam"]
         ]
     
     keyboard = []
     for row in questions:
         keyboard.append([
-            InlineKeyboardButton(text=q, callback_data=f"ai_q_{q.replace(' ', '_')}")
-            for q in row
+            InlineKeyboardButton(text=q, callback_data=f"ai_q_{i}_{j}")
+            for j, q in enumerate(row)
         ])
     
-    # Orqaga tugmasini qo'shamiz
-    keyboard.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="ai_back")])
+    keyboard.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="ai_back_main")])
     
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 @dp.message(F.text == "🤖 AI Yordam")
 async def ai_help_start(message: types.Message, state: FSMContext):
-    """AI yordam boshlash - tayyor savollar bilan"""
+    """AI yordam boshlash"""
     await state.clear()
     uid = message.from_user.id
     is_boss = uid in BOSS_IDS
     
-    # Klaviaturani yaratish
     kb = get_ai_questions_keyboard(is_boss)
     
     if is_boss:
         text = (
             "🤖 **AI Yordamchi - Boss Paneli**\n\n"
             "📊 **Tezkor savollar** (birini bosing):\n\n"
-            "Yoki o'z savolingizni yozing."
+            "Yoki **istalgan savolingizni yozing** - AI javob beradi! 💬"
         )
     else:
         text = (
             "🤖 **AI Yordamchi**\n\n"
             "📊 **Tezkor savollar** (birini bosing):\n\n"
-            "Yoki o'z savolingizni yozing."
+            "Yoki **istalgan savolingizni yozing** - AI javob beradi! 💬"
         )
     
     await message.answer(text, reply_markup=kb, parse_mode="Markdown")
@@ -375,13 +372,33 @@ async def handle_ai_question(callback: CallbackQuery, state: FSMContext):
     """Tayyor savollarga javob berish"""
     await callback.answer()
     
-    # Savolni callback data dan olish
-    question = callback.data.replace("ai_q_", "").replace("_", " ")
+    parts = callback.data.split("_")
+    row_idx = int(parts[2])
+    col_idx = int(parts[3])
     
-    # Javobni jarayon qilish
-    await process_ai_question(callback.message, question, state)
+    uid = callback.from_user.id
+    is_boss = uid in BOSS_IDS
+    
+    # Savollar ro'yxati
+    if is_boss:
+        questions = [
+            ["Bugungi kassa qancha?", "Bu oy qancha savdo?"],
+            ["Eng yaxshi ishchi kim?", "Eng ko'p qarzidor do'kon?"],
+            ["Ishlamaydigan do'konlar?", "Qaysi ishchi eng ko'p qarz?"],
+            ["Oylik hisobot", "Umumiy statistika"]
+        ]
+    else:
+        questions = [
+            ["Bugun qancha savdo?", "Bu oy qancha yig'dim?"],
+            ["Qarzi bor do'konlarim?", "Eng yaxshi do'konim?"],
+            ["O'tgan oy vs Bu oy", "Oylik hisobotim"],
+            ["Umumiy statistikam"]
+        ]
+    
+    question = questions[row_idx][col_idx]
+    await process_ai_question(callback.message, question, state, is_boss)
 
-@dp.callback_query(F.data == "ai_back")
+@dp.callback_query(F.data == "ai_back_main")
 async def ai_back_callback(callback: CallbackQuery, state: FSMContext):
     """AI dan orqaga qaytish"""
     await callback.answer()
@@ -398,34 +415,29 @@ async def ai_handle_chat(message: types.Message, state: FSMContext):
     """AI orqali savollarga javob berish (matnli savollar)"""
     uid = message.from_user.id
     user_question = message.text.strip()
+    is_boss = uid in BOSS_IDS
     
-    await process_ai_question(message, user_question, state)
+    await process_ai_question(message, user_question, state, is_boss)
 
-async def process_ai_question(message: types.Message, question: str, state: FSMContext):
+async def process_ai_question(message: types.Message, question: str, state: FSMContext, is_boss: bool):
     """AI savolni qayta ishlash"""
     uid = message.from_user.id
-    is_boss = uid in BOSS_IDS
     
     msg = await message.answer("🔍 Ma'lumotlar tahlil qilinmoqda...")
     
     try:
         conn = get_db(); cur = dict_cursor(conn)
         
-        # Bugungi sana
         today = date.today().strftime("%d.%m.%Y")
         today_pattern = f"{today}%"
-        
-        # Joriy oy
         current_month = datetime.now().strftime("%m.%Y")
         month_pattern = f"%{current_month}%"
         
-        # Umumiy ma'lumotlarni olish
-        if is_boss:
-            w_cond, w_params = "", ()
-        else:
-            w_cond, w_params = "WHERE worker_id = %s", (uid,)
+        # O'tgan oy
+        last_month_dt = datetime.now() - timedelta(days=30)
+        last_month = last_month_dt.strftime("%m.%Y")
+        last_month_pattern = f"%{last_month}%"
         
-        # Savol turini aniqlash va javob berish
         q_lower = question.lower()
         answer = ""
         
@@ -443,15 +455,10 @@ async def process_ai_question(message: types.Message, question: str, state: FSMC
                 """, (today_pattern, uid))
             result = cur.fetchone()
             
-            answer = (
-                f"📅 **Bugungi natijalar ({today})**\n\n"
-                f"💵 Kassa: {fmt(result['cash'])}\n"
-                f"💰 Savdo hajmi: {fmt(result['total'])}\n"
-                f"📝 Savdolar soni: {result['count']} ta"
-            )
+            answer = f"📅 **Bugungi natijalar ({today})**\n\n💵 Kassa: {fmt(result['cash'])}\n💰 Savdo hajmi: {fmt(result['total'])}\n📝 Savdolar soni: {result['count']} ta"
         
         # 2. BU OY SAVDO
-        elif "bu oy" in q_lower or "oy qancha" in q_lower:
+        elif "bu oy" in q_lower and "qancha" in q_lower:
             if is_boss:
                 cur.execute(f"""
                     SELECT COUNT(id) as count, COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total),0) as total
@@ -464,14 +471,9 @@ async def process_ai_question(message: types.Message, question: str, state: FSMC
                 """, (month_pattern, uid))
             result = cur.fetchone()
             
-            answer = (
-                f"📅 **Bu oy ({current_month})**\n\n"
-                f"💵 Yig'ilgan: {fmt(result['cash'])}\n"
-                f"💰 Savdo: {fmt(result['total'])}\n"
-                f"📝 Savdolar: {result['count']} ta"
-            )
+            answer = f"📅 **Bu oy ({current_month})**\n\n💵 Yig'ilgan: {fmt(result['cash'])}\n💰 Savdo: {fmt(result['total'])}\n📝 Savdolar: {result['count']} ta"
         
-        # 3. ENG YAXSHI ISHCHI (faqat boss uchun)
+        # 3. ENG YAXSHI ISHCHI
         elif "eng yaxshi ishchi" in q_lower and is_boss:
             cur.execute("""
                 SELECT u.name, COALESCE(SUM(s.total),0) as total_sales, COALESCE(SUM(s.cash),0) as cash
@@ -482,17 +484,12 @@ async def process_ai_question(message: types.Message, question: str, state: FSMC
             result = cur.fetchone()
             
             if result:
-                answer = (
-                    f"🏆 **Eng yaxshi ishchi**\n\n"
-                    f"👤 Ism: {result['name']}\n"
-                    f"💰 Savdo: {fmt(result['total_sales'])}\n"
-                    f"💵 Naqt: {fmt(result['cash'])}"
-                )
+                answer = f"🏆 **Eng yaxshi ishchi**\n\n👤 Ism: {result['name']}\n💰 Savdo: {fmt(result['total_sales'])}\n💵 Naqt: {fmt(result['cash'])}"
             else:
                 answer = "📊 Hozircha ma'lumot yo'q."
         
         # 4. ENG KO'P QARZIDOR DO'KON
-        elif "qarzidor do'kon" in q_lower or "ko'p qarz" in q_lower:
+        elif "qarzidor do'kon" in q_lower or ("ko'p qarz" in q_lower and "ishchi" not in q_lower):
             if is_boss:
                 cur.execute("""
                     SELECT normalized_store, COALESCE(SUM(total),0) as total_sales, 
@@ -515,17 +512,11 @@ async def process_ai_question(message: types.Message, question: str, state: FSMC
             result = cur.fetchone()
             
             if result:
-                answer = (
-                    f"💳 **Eng ko'p qarzidor do'kon**\n\n"
-                    f"🏪 Do'kon: {result['normalized_store']}\n"
-                    f"💰 Savdo: {fmt(result['total_sales'])}\n"
-                    f"💵 Yig'ilgan: {fmt(result['cash'])}\n"
-                    f"📉 **Qarz: {fmt(result['debt'])}**"
-                )
+                answer = f"💳 **Eng ko'p qarzidor do'kon**\n\n🏪 Do'kon: {result['normalized_store']}\n💰 Savdo: {fmt(result['total_sales'])}\n💵 Yig'ilgan: {fmt(result['cash'])}\n📉 **Qarz: {fmt(result['debt'])}**"
             else:
                 answer = "✅ Hech qanday qarz yo'q!"
         
-        # 5. ISHLAMAYDIGAN DO'KONLAR (faqat boss uchun)
+        # 5. ISHLAMAYDIGAN DO'KONLAR
         elif "ishlamay" in q_lower and is_boss:
             cur.execute("""
                 SELECT normalized_store, MAX(date) as last_sale, COUNT(id) as total_sales
@@ -546,13 +537,11 @@ async def process_ai_question(message: types.Message, question: str, state: FSMC
                     except:
                         days = "?"
                     
-                    answer += f"{i}. 🏪 **{r['normalized_store']}**\n"
-                    answer += f"   Oxirgi savdo: {last_date} ({days} kun oldin)\n"
-                    answer += f"   Jami savdolar: {r['total_sales']} ta\n\n"
+                    answer += f"{i}. 🏪 **{r['normalized_store']}**\n   Oxirgi savdo: {last_date} ({days} kun oldin)\n   Jami savdolar: {r['total_sales']} ta\n\n"
             else:
                 answer = "✅ Barcha do'konlar faol!"
         
-        # 6. QARZI BOR DO'KONLAR (ishchi uchun)
+        # 6. QARZI BOR DO'KONLAR
         elif "qarzi bor do'kon" in q_lower and not is_boss:
             cur.execute("""
                 SELECT normalized_store, COALESCE(SUM(total),0) as total, 
@@ -573,7 +562,52 @@ async def process_ai_question(message: types.Message, question: str, state: FSMC
             else:
                 answer = "✅ Sizda qarzi bor do'konlar yo'q!"
         
-        # 7. UMUMIY STATISTIKA
+        # 7. O'TGAN OY VS BU OY (YANGI!)
+        elif "o'tgan oy" in q_lower and "bu oy" in q_lower and not is_boss:
+            # Bu oy
+            cur.execute(f"""
+                SELECT COUNT(id) as sales, COALESCE(SUM(total),0) as revenue, 
+                       COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total)-SUM(cash),0) as debt,
+                       COALESCE(SUM(CASE WHEN txn_type = 'qaytarish' THEN total ELSE 0 END),0) as returns
+                FROM sales WHERE date LIKE %s AND worker_id = %s
+            """, (month_pattern, uid))
+            this_month = cur.fetchone()
+            
+            # O'tgan oy
+            cur.execute(f"""
+                SELECT COUNT(id) as sales, COALESCE(SUM(total),0) as revenue, 
+                       COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total)-SUM(cash),0) as debt,
+                       COALESCE(SUM(CASE WHEN txn_type = 'qaytarish' THEN total ELSE 0 END),0) as returns
+                FROM sales WHERE date LIKE %s AND worker_id = %s
+            """, (last_month_pattern, uid))
+            last_month_data = cur.fetchone()
+            
+            answer = f"📊 **SOLISHTIRISH: O'tgan oy vs Bu oy**\n\n"
+            answer += f"📅 **O'TGAN OY ({last_month}):**\n"
+            answer += f"  📝 Savdolar: {last_month_data['sales']} ta\n"
+            answer += f"  💰 Savdo hajmi: {fmt(last_month_data['revenue'])}\n"
+            answer += f"  💵 Naqt: {fmt(last_month_data['cash'])}\n"
+            answer += f"  🔄 Qaytarish: {fmt(last_month_data['returns'])}\n"
+            answer += f"  📉 Qarz: {fmt(last_month_data['debt'])}\n\n"
+            
+            answer += f"📅 **BU OY ({current_month}):**\n"
+            answer += f"  📝 Savdolar: {this_month['sales']} ta\n"
+            answer += f"  💰 Savdo hajmi: {fmt(this_month['revenue'])}\n"
+            answer += f"  💵 Naqt: {fmt(this_month['cash'])}\n"
+            answer += f"  🔄 Qaytarish: {fmt(this_month['returns'])}\n"
+            answer += f"  📉 Qarz: {fmt(this_month['debt'])}\n\n"
+            
+            # Farq
+            if last_month_data['revenue'] > 0:
+                change = ((this_month['revenue'] - last_month_data['revenue']) / last_month_data['revenue']) * 100
+                if change > 0:
+                    answer += f"📈 **O'sish: +{change:.1f}%**"
+                elif change < 0:
+                    answer += f"📉 **Kamayish: {change:.1f}%"
+                else:
+                    answer += f"➡️ **O'zgarishsiz**"
+        
+        # 8. UMUMIY STATISTIKA
         elif "statistika" in q_lower or "umumiy" in q_lower:
             if is_boss:
                 cur.execute("""
@@ -584,15 +618,7 @@ async def process_ai_question(message: types.Message, question: str, state: FSMC
                 """)
                 result = cur.fetchone()
                 
-                answer = (
-                    f"📊 **UMUMIY STATISTIKA**\n\n"
-                    f"👥 Ishchilar: {result['workers']} ta\n"
-                    f"🏪 Do'konlar: {result['stores']} ta\n"
-                    f"📝 Savdolar: {result['sales']} ta\n"
-                    f"💰 Savdo hajmi: {fmt(result['revenue'])}\n"
-                    f"💵 Yig'ilgan: {fmt(result['cash'])}\n"
-                    f"📉 Qarz: {fmt(result['debt'])}"
-                )
+                answer = f"📊 **UMUMIY STATISTIKA**\n\n👥 Ishchilar: {result['workers']} ta\n🏪 Do'konlar: {result['stores']} ta\n📝 Savdolar: {result['sales']} ta\n💰 Savdo hajmi: {fmt(result['revenue'])}\n💵 Yig'ilgan: {fmt(result['cash'])}\n📉 Qarz: {fmt(result['debt'])}"
             else:
                 cur.execute("""
                     SELECT COUNT(DISTINCT normalized_store) as stores, COUNT(id) as sales,
@@ -602,16 +628,9 @@ async def process_ai_question(message: types.Message, question: str, state: FSMC
                 """, (uid,))
                 result = cur.fetchone()
                 
-                answer = (
-                    f"📊 **SIZNING STATISTIKANGIZ**\n\n"
-                    f"🏪 Do'konlar: {result['stores']} ta\n"
-                    f"📝 Savdolar: {result['sales']} ta\n"
-                    f"💰 Savdo: {fmt(result['revenue'])}\n"
-                    f"💵 Yig'ilgan: {fmt(result['cash'])}\n"
-                    f"📉 Qarz: {fmt(result['debt'])}"
-                )
+                answer = f"📊 **SIZNING STATISTIKANGIZ**\n\n🏪 Do'konlar: {result['stores']} ta\n📝 Savdolar: {result['sales']} ta\n💰 Savdo: {fmt(result['revenue'])}\n💵 Yig'ilgan: {fmt(result['cash'])}\n📉 Qarz: {fmt(result['debt'])}"
         
-        # 8. OYLIK HISOBOT
+        # 9. OYLIK HISOBOT
         elif "hisobot" in q_lower:
             if is_boss:
                 cur.execute(f"""
@@ -628,15 +647,9 @@ async def process_ai_question(message: types.Message, question: str, state: FSMC
             
             result = cur.fetchone()
             
-            answer = (
-                f"📅 **Oylik hisobot ({current_month})**\n\n"
-                f"📝 Savdolar: {result['sales']} ta\n"
-                f"💰 Savdo hajmi: {fmt(result['revenue'])}\n"
-                f"💵 Yig'ilgan: {fmt(result['cash'])}\n"
-                f"📉 Qarz: {fmt(result['debt'])}"
-            )
+            answer = f"📅 **Oylik hisobot ({current_month})**\n\n📝 Savdolar: {result['sales']} ta\n💰 Savdo hajmi: {fmt(result['revenue'])}\n💵 Yig'ilgan: {fmt(result['cash'])}\n📉 Qarz: {fmt(result['debt'])}"
         
-        # 9. ENG YAXSHI DO'KON
+        # 10. ENG YAXSHI DO'KON
         elif "eng yaxshi do'kon" in q_lower:
             if is_boss:
                 cur.execute("""
@@ -656,16 +669,11 @@ async def process_ai_question(message: types.Message, question: str, state: FSMC
             result = cur.fetchone()
             
             if result and result['normalized_store']:
-                answer = (
-                    f"🏆 **Eng yaxshi do'kon**\n\n"
-                    f"🏪 Do'kon: {result['normalized_store']}\n"
-                    f"💰 Savdo: {fmt(result['total_sales'])}\n"
-                    f"💵 Naqt: {fmt(result['cash'])}"
-                )
+                answer = f"🏆 **Eng yaxshi do'kon**\n\n🏪 Do'kon: {result['normalized_store']}\n💰 Savdo: {fmt(result['total_sales'])}\n💵 Naqt: {fmt(result['cash'])}"
             else:
                 answer = "📊 Hozircha ma'lumot yo'q."
         
-        # 10. QAYSI ISHCHI ENG KO'P QARZ (faqat boss uchun)
+        # 11. QAYSI ISHCHI ENG KO'P QARZ
         elif "ishchi eng ko'p qarz" in q_lower and is_boss:
             cur.execute("""
                 SELECT u.name, COALESCE(SUM(s.total)-SUM(s.cash),0) as total_debt, COUNT(s.id) as sales_count
@@ -679,22 +687,54 @@ async def process_ai_question(message: types.Message, question: str, state: FSMC
             if results:
                 answer = "💰 **Eng ko'p qarz yig'gan ishchilar:**\n\n"
                 for i, r in enumerate(results, 1):
-                    answer += f"{i}. 👤 **{r['name']}**\n"
-                    answer += f"   Qarz: {fmt(r['total_debt'])}\n"
-                    answer += f"   Savdolar: {r['sales_count']} ta\n\n"
+                    answer += f"{i}. 👤 **{r['name']}**\n   Qarz: {fmt(r['total_debt'])}\n   Savdolar: {r['sales_count']} ta\n\n"
             else:
                 answer = "✅ Hech kimda qarz yo'q!"
         
-        # Agar savol tanilmagan bo'lsa
+        # 12. ERKIN SAVOL (AI ORQALI)
         else:
-            answer = "❓ Bu savolga javob topilmadi. Boshqa savol bering yoki quyidagilardan birini tanlang."
+            # Bazadan umumiy ma'lumot olish
+            cur.execute("""
+                SELECT COUNT(id) as total_sales, COALESCE(SUM(total),0) as revenue, 
+                       COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total)-SUM(cash),0) as debt
+                FROM sales {where_clause}
+            """.format(where_clause="WHERE worker_id = %s" if not is_boss else ""))
+            
+            if is_boss:
+                stats = cur.fetchone()
+            else:
+                cur.execute("""
+                    SELECT COUNT(id) as total_sales, COALESCE(SUM(total),0) as revenue, 
+                           COALESCE(SUM(cash),0) as cash, COALESCE(SUM(total)-SUM(cash),0) as debt
+                    FROM sales WHERE worker_id = %s
+                """, (uid,))
+                stats = cur.fetchone()
+            
+            context = f"""Jami savdolar: {stats['total_sales']}
+Umumiy savdo: {fmt(stats['revenue'])}
+Yig'ilgan: {fmt(stats['cash'])}
+Qarz: {fmt(stats['debt'])}"""
+            
+            # OpenAI API orqali javob
+            try:
+                res = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": f"Siz MK Kassa boti yordamchisisiz. Foydalanuvchi savoliga quyidagi ma'lumotlar asosida javob bering. Agar savol bot haqida bo'lsa, do'stona javob bering:\n\n{context}"},
+                        {"role": "user", "content": question}
+                    ],
+                    max_tokens=200
+                )
+                answer = res.choices[0].message.content
+            except:
+                answer = f"❓ Kechirasiz, bu savolga javob topilmadi. Quyidagi mavzularda savol berishingiz mumkin:\n\n• Bugungi/bu oy savdo\n• Qarzidor do'konlar\n• Eng yaxshi ishchi/do'kon\n• Umumiy statistika"
         
         conn.close()
         
         # Javobni yuborish
         await msg.edit_text(answer, parse_mode="Markdown")
         
-        # Klaviaturani qaytarish
+        # Klaviaturani qaytarish (to'g'ri is_boss bilan)
         kb = get_ai_questions_keyboard(is_boss)
         await message.answer("❓ **Boshqa savol bering:**", reply_markup=kb, parse_mode="Markdown")
         
