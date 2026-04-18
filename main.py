@@ -332,7 +332,7 @@ def get_ai_questions_keyboard(is_boss=True):
         ]
     
     keyboard = []
-    for row in questions:
+    for i, row in enumerate(questions):  # ✅ i qo'shildi!
         keyboard.append([
             InlineKeyboardButton(text=q, callback_data=f"ai_q_{i}_{j}")
             for j, q in enumerate(row)
