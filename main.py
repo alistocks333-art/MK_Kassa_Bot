@@ -161,6 +161,16 @@ def extract_month_keys(text_value):
     return keys
 
 
+def collect_available_months(rows):
+    months = set()
+    for row in rows:
+        text_value = row["date"] if isinstance(row, dict) else row
+        for key in extract_month_keys(text_value):
+            if len(key.split(".")[1]) == 4:
+                months.add(key)
+    return sorted(months, reverse=True)
+
+
 async def notify_boss(worker_uid, store, total, cash, txn_type, date_str):
     try:
         worker_name = get_worker_name(worker_uid)
@@ -658,6 +668,25 @@ async def process_ai_question(message: types.Message, question: str, state: FSMC
         q_lower = question.lower()
         answer = ""
 
+        worker_sales = []
+        if not is_boss:
+            cur.execute(
+                "SELECT normalized_store, total, cash, date, txn_type FROM sales WHERE worker_id = %s ORDER BY id DESC",
+                (uid,),
+            )
+            worker_sales = cur.fetchall()
+
+        def summarize_month(rows, month_key):
+            count = total = cash = debt = 0
+            for row in rows:
+                if month_key not in extract_month_keys(row["date"]):
+                    continue
+                count += 1
+                total += row["total"] or 0
+                cash += row["cash"] or 0
+                debt += (row["total"] or 0) - (row["cash"] or 0)
+            return {"count": count, "total": total, "cash": cash, "debt": debt}
+
         if "bugungi kassa" in q_lower or "bugun qancha savdo" in q_lower:
             if is_boss:
                 cur.execute(
@@ -678,12 +707,9 @@ async def process_ai_question(message: types.Message, question: str, state: FSMC
                     "SELECT COUNT(id) AS count, COALESCE(SUM(cash),0) AS cash, COALESCE(SUM(total),0) AS total FROM sales WHERE date LIKE %s",
                     (f"%{current_month}%",),
                 )
+                r = cur.fetchone()
             else:
-                cur.execute(
-                    "SELECT COUNT(id) AS count, COALESCE(SUM(cash),0) AS cash, COALESCE(SUM(total),0) AS total FROM sales WHERE date LIKE %s AND worker_id = %s",
-                    (f"%{current_month}%", uid),
-                )
-            r = cur.fetchone()
+                r = summarize_month(worker_sales, current_month)
             answer = f"📅 **Bu oy ({current_month})**\n💵 Yig'ilgan: {fmt(r['cash'])}\n💰 Savdo: {fmt(r['total'])}\n📝 Soni: {r['count']} ta"
 
         elif "eng yaxshi ishchi" in q_lower and is_boss:
@@ -768,26 +794,8 @@ async def process_ai_question(message: types.Message, question: str, state: FSMC
             ) if res else "✅ Qarz yo'q!"
 
         elif "o'tgan oy" in q_lower and "bu oy" in q_lower and not is_boss:
-            cur.execute(
-                """
-                SELECT COUNT(id) AS count, COALESCE(SUM(total),0) AS total, COALESCE(SUM(cash),0) AS cash,
-                       COALESCE(SUM(total)-SUM(cash),0) AS debt
-                FROM sales
-                WHERE date LIKE %s AND worker_id = %s
-                """,
-                (f"%{current_month}%", uid),
-            )
-            this_month = cur.fetchone()
-            cur.execute(
-                """
-                SELECT COUNT(id) AS count, COALESCE(SUM(total),0) AS total, COALESCE(SUM(cash),0) AS cash,
-                       COALESCE(SUM(total)-SUM(cash),0) AS debt
-                FROM sales
-                WHERE date LIKE %s AND worker_id = %s
-                """,
-                (f"%{last_month}%", uid),
-            )
-            last = cur.fetchone()
+            this_month = summarize_month(worker_sales, current_month)
+            last = summarize_month(worker_sales, last_month)
             answer = (
                 f"📊 **SOLISHTIRISH**\n"
                 f"📅 O'tgan oy: 💰{fmt(last['total'])} 💵{fmt(last['cash'])} 📉{fmt(last['debt'])}\n"
@@ -819,20 +827,11 @@ async def process_ai_question(message: types.Message, question: str, state: FSMC
                     f"📉 Qarz: {fmt(r['debt'])}"
                 )
             else:
-                cur.execute(
-                    """
-                    SELECT
-                        COUNT(DISTINCT normalized_store) AS stores,
-                        COUNT(id) AS sales_count,
-                        COALESCE(SUM(total),0) AS total,
-                        COALESCE(SUM(cash),0) AS cash,
-                        COALESCE(SUM(total)-SUM(cash),0) AS debt
-                    FROM sales
-                    WHERE worker_id = %s
-                    """,
-                    (uid,),
-                )
-                r = cur.fetchone()
+                stores = {row["normalized_store"] for row in worker_sales if row.get("normalized_store")}
+                total = sum((row["total"] or 0) for row in worker_sales)
+                cash = sum((row["cash"] or 0) for row in worker_sales)
+                debt = sum((row["total"] or 0) - (row["cash"] or 0) for row in worker_sales)
+                r = {"stores": len(stores), "sales_count": len(worker_sales), "total": total, "cash": cash, "debt": debt}
                 answer = (
                     "📊 **SIZNING**\n"
                     f"🏪 Do'konlar: {r['stores']} ta\n"
@@ -853,17 +852,9 @@ async def process_ai_question(message: types.Message, question: str, state: FSMC
                     """,
                     (f"%{current_month}%",),
                 )
+                r = cur.fetchone()
             else:
-                cur.execute(
-                    """
-                    SELECT COUNT(id) AS count, COALESCE(SUM(total),0) AS total,
-                           COALESCE(SUM(cash),0) AS cash, COALESCE(SUM(total)-SUM(cash),0) AS debt
-                    FROM sales
-                    WHERE date LIKE %s AND worker_id = %s
-                    """,
-                    (f"%{current_month}%", uid),
-                )
-            r = cur.fetchone()
+                r = summarize_month(worker_sales, current_month)
             answer = f"📅 **Oylik hisobot**\n📝 {r['count']} ta | 💰 {fmt(r['total'])} | 💵 {fmt(r['cash'])} | 📉 {fmt(r['debt'])}"
 
         elif "eng yaxshi do'kon" in q_lower:
@@ -920,14 +911,39 @@ async def process_ai_question(message: types.Message, question: str, state: FSMC
                     "SELECT COUNT(id) AS count, COALESCE(SUM(total),0) AS total, COALESCE(SUM(cash),0) AS cash, COALESCE(SUM(total)-SUM(cash),0) AS debt FROM sales WHERE worker_id = %s",
                     (uid,),
                 )
-            s = cur.fetchone()
-            ctx = f"Savdolar: {s['count']}, Hajm: {fmt(s['total'])}, Naqt: {fmt(s['cash'])}, Qarz: {fmt(s['debt'])}"
+                s = cur.fetchone()
+            if not is_boss:
+                this_month = summarize_month(worker_sales, current_month)
+                best_store = ""
+                best_total = 0
+                store_totals = {}
+                for row in worker_sales:
+                    store = row.get("normalized_store")
+                    if not store:
+                        continue
+                    store_totals.setdefault(store, 0)
+                    store_totals[store] += row["total"] or 0
+                if store_totals:
+                    best_store, best_total = max(store_totals.items(), key=lambda x: x[1])
+                ctx = (
+                    f"Ishchi statistikasi. "
+                    f"Jami savdolar: {len(worker_sales)}, "
+                    f"Jami hajm: {fmt(sum((r['total'] or 0) for r in worker_sales))}, "
+                    f"Jami naqt: {fmt(sum((r['cash'] or 0) for r in worker_sales))}, "
+                    f"Jami qarz: {fmt(sum((r['total'] or 0) - (r['cash'] or 0) for r in worker_sales))}, "
+                    f"Bu oy savdo: {fmt(this_month['total'])}, "
+                    f"Bu oy naqt: {fmt(this_month['cash'])}, "
+                    f"Bu oy soni: {this_month['count']}, "
+                    f"Eng yaxshi do'kon: {best_store or 'yoq'} ({fmt(best_total)})."
+                )
+            else:
+                ctx = f"Savdolar: {s['count']}, Hajm: {fmt(s['total'])}, Naqt: {fmt(s['cash'])}, Qarz: {fmt(s['debt'])}"
             if client:
                 try:
                     res = client.chat.completions.create(
                         model="gpt-4o-mini",
                         messages=[
-                            {"role": "system", "content": f"MK Kassa yordamchisisiz. Ma'lumot: {ctx}. Qisqa javob bering."},
+                            {"role": "system", "content": f"MK Kassa yordamchisisiz. Faqat berilgan ma'lumotga tayangan holda, qisqa va aniq javob bering. Ma'lumot: {ctx}"},
                             {"role": "user", "content": question},
                         ],
                         max_tokens=150,
@@ -1074,7 +1090,6 @@ async def boss_top_stores(message: types.Message):
 @dp.message(F.text == "📅 Oylik kassa")
 async def handle_monthly_cash(message: types.Message):
     uid = message.from_user.id
-    month = datetime.now().strftime("%m.%Y")
 
     if uid not in BOSS_IDS:
         conn = get_db()
@@ -1082,25 +1097,18 @@ async def handle_monthly_cash(message: types.Message):
         cur.execute("SELECT date, cash FROM sales WHERE worker_id = %s AND cash > 0 ORDER BY date DESC", (uid,))
         raw_rows = cur.fetchall()
         conn.close()
-        grouped = {}
-        for row in raw_rows:
-            day = row["date"][:10]
-            if month not in extract_month_keys(row["date"]):
-                continue
-            grouped.setdefault(day, 0)
-            grouped[day] += row["cash"] or 0
-        rows = [{"d": d, "cash": grouped[d]} for d in sorted(grouped.keys(), reverse=True)]
-        if not rows:
-            return await message.answer(f"📅 {month}: Ma'lumot yo'q.")
+
+        months = collect_available_months(raw_rows)
+        if not months:
+            return await message.answer("📅 Hozircha oylik kassa ma'lumoti yo'q.")
+
         kb = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text=f"📆 {r['d']} | {fmt(r['cash'])}", callback_data=f"day_{r['d']}")]
-                for r in rows
-            ]
+            inline_keyboard=[[InlineKeyboardButton(text=f"📅 {m}", callback_data=f"wm_{m}")] for m in months]
         )
         kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="back_main")])
-        return await message.answer(f"📅 {month} kassa:", reply_markup=kb)
+        return await message.answer("📅 Oyni tanlang:", reply_markup=kb)
 
+    month = datetime.now().strftime("%m.%Y")
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📅 Kunlik Umumiy", callback_data=f"mc_all_{month}")],
@@ -1108,6 +1116,65 @@ async def handle_monthly_cash(message: types.Message):
         ]
     )
     await message.answer(f"📅 Oylik kassa ({month}):", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("wm_"))
+async def worker_month_dates(callback: CallbackQuery):
+    await callback.answer()
+    month = callback.data.replace("wm_", "")
+    uid = callback.from_user.id
+    if uid in BOSS_IDS:
+        return
+
+    conn = get_db()
+    cur = dict_cursor(conn)
+    cur.execute("SELECT date, cash FROM sales WHERE worker_id = %s AND cash > 0 ORDER BY date DESC", (uid,))
+    raw_rows = cur.fetchall()
+    conn.close()
+
+    grouped = {}
+    for row in raw_rows:
+        day = row["date"][:10]
+        if month not in extract_month_keys(row["date"]):
+            continue
+        grouped.setdefault(day, 0)
+        grouped[day] += row["cash"] or 0
+
+    rows = [{"d": d, "cash": grouped[d]} for d in sorted(grouped.keys(), reverse=True)]
+    if not rows:
+        return await callback.message.edit_text(f"📅 {month}: Ma'lumot yo'q.")
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=f"📆 {r['d']} | {fmt(r['cash'])}", callback_data=f"day_{r['d']}")]
+            for r in rows
+        ]
+    )
+    kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Oylar", callback_data="worker_months_back")])
+    await callback.message.edit_text(f"📅 {month} kassa:", reply_markup=kb)
+
+
+@dp.callback_query(F.data == "worker_months_back")
+async def worker_months_back(callback: CallbackQuery):
+    await callback.answer()
+    uid = callback.from_user.id
+    if uid in BOSS_IDS:
+        return
+
+    conn = get_db()
+    cur = dict_cursor(conn)
+    cur.execute("SELECT date FROM sales WHERE worker_id = %s ORDER BY date DESC", (uid,))
+    months = collect_available_months(cur.fetchall())
+    conn.close()
+
+    if not months:
+        return await callback.message.edit_text("📅 Hozircha oylik kassa ma'lumoti yo'q.")
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=f"📅 {m}", callback_data=f"wm_{m}")] for m in months]
+    )
+    kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="back_main")])
+    await callback.message.edit_text("📅 Oyni tanlang:", reply_markup=kb)
 
 
 @dp.callback_query(F.data.startswith("mc_all_"))
