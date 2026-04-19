@@ -49,26 +49,32 @@ class AppStates(StatesGroup):
 
 # ================= YORDAMCHI =================
 WORKER_MENU_BUTTONS = {
-    "✍️ Savdo qo'shish",
-    "📊 Kunlik kassa",
+    "📝 Savdo kiritish",
+    "💵 Bugungi kassa",
     "🔍 Do'kon qidirish",
     "🤝 Qarzi borlar",
-    "🏪 Do'konlarim",
-    "📅 Oylik kassa",
-    "📅 Oylik hisobot",
+    "🧾 Do'konlarim",
+    "📚 Oylik arxiv",
+    "📈 Statistika",
     "💰 Oylik maosh",
+    "🕘 Oxirgi amal",
     "🤖 AI Yordam",
+    "🤖 AI Pro",
 }
 
 BOSS_MENU_BUTTONS = {
+    "📊 Boss Panel",
+    "📤 Excel eksport",
+    "📅 Sana filter",
+    "🤝 Qarzdorlar Pro",
+    "👥 Ishchi statistikasi",
+    "🏪 Do'kon reytingi",
+    "🔔 Eslatma",
     "💰 Kassa (Live)",
-    "🤝 Qarzi borlar",
     "👥 Ishchilar",
     "🤖 AI Yordam",
+    "🤖 AI Pro",
     "📅 Oylik arxiv",
-    "🏪 Barcha do'konlar",
-    "📊 Eng yaxshi ishchilar",
-    "🏆 Eng yaxshi do'konlar",
     "📅 Oylik kassa",
     "💰 Oylik maosh",
 }
@@ -351,10 +357,11 @@ def get_worker_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📝 Savdo kiritish"), KeyboardButton(text="💵 Bugungi kassa")],
-            [KeyboardButton(text="🔍 Do'kon qidirish"), KeyboardButton(text="🧾 Do'konlarim")],
-            [KeyboardButton(text="📚 Oylik arxiv"), KeyboardButton(text="📈 Statistika")],
-            [KeyboardButton(text="💰 Oylik maosh"), KeyboardButton(text="🕘 Oxirgi amal")],
-            [KeyboardButton(text="🤖 AI Yordam"), KeyboardButton(text="🤖 AI Pro")],
+            [KeyboardButton(text="🔍 Do'kon qidirish"), KeyboardButton(text="🤝 Qarzi borlar")],
+            [KeyboardButton(text="🧾 Do'konlarim"), KeyboardButton(text="📚 Oylik arxiv")],
+            [KeyboardButton(text="📈 Statistika"), KeyboardButton(text="💰 Oylik maosh")],
+            [KeyboardButton(text="🕘 Oxirgi amal"), KeyboardButton(text="🤖 AI Yordam")],
+            [KeyboardButton(text="🤖 AI Pro")],
         ],
         resize_keyboard=True,
     )
@@ -468,24 +475,44 @@ async def route_menu_button(message: types.Message, state: FSMContext):
 
     if text == "⬅️ Orqaga":
         return await start_cmd(message, state)
-    if text == "✍️ Savdo qo'shish":
+    if text == "✍️ Savdo qo'shish" or text == "📝 Savdo kiritish":
         return await trade_init(message, state)
-    if text == "📊 Kunlik kassa":
+    if text == "📊 Kunlik kassa" or text == "💵 Bugungi kassa":
         return await daily_cash(message)
     if text == "🔍 Do'kon qidirish":
         return await search_prompt(message, state)
     if text == "🤝 Qarzi borlar":
         return await handle_debtors(message)
-    if text == "🏪 Do'konlarim":
+    if text == "🤝 Qarzdorlar Pro":
+        return await handle_debtors(message)
+    if text == "🏪 Do'konlarim" or text == "🧾 Do'konlarim":
         return await stores_list_cmd(message)
-    if text == "📅 Oylik kassa":
+    if text == "📅 Oylik kassa" or text == "📚 Oylik arxiv":
         return await handle_monthly_cash(message)
     if text == "📅 Oylik hisobot":
         return await monthly_report(message)
+    if text == "📈 Statistika":
+        return await pro_my_stats(message)
     if text == "💰 Oylik maosh":
         return await calculate_salary(message)
+    if text == "🕘 Oxirgi amal":
+        return await pro_last_action(message, state)
     if text == "🤖 AI Yordam":
         return await ai_help_start(message, state)
+    if text == "🤖 AI Pro":
+        return await pro_ai_prompt(message, state)
+    if text == "📊 Boss Panel":
+        return await pro_boss_panel(message)
+    if text == "📤 Excel eksport":
+        return await pro_export_prompt(message)
+    if text == "📅 Sana filter":
+        return await pro_range_prompt(message, state)
+    if text == "👥 Ishchi statistikasi":
+        return await pro_worker_stats(message)
+    if text == "🏪 Do'kon reytingi":
+        return await pro_store_ranking(message)
+    if text == "🔔 Eslatma":
+        return await pro_alerts(message)
     if text == "💰 Kassa (Live)":
         return await boss_kassa_live(message)
     if text == "👥 Ishchilar":
