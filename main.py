@@ -59,7 +59,6 @@ WORKER_MENU_BUTTONS = {
     "💰 Oylik maosh",
     "🕘 Oxirgi amal",
     "🤖 AI Yordam",
-    "🤖 AI Pro",
 }
 
 BOSS_MENU_BUTTONS = {
@@ -361,7 +360,6 @@ def get_worker_menu():
             [KeyboardButton(text="🧾 Do'konlarim"), KeyboardButton(text="📚 Oylik arxiv")],
             [KeyboardButton(text="📈 Statistika"), KeyboardButton(text="💰 Oylik maosh")],
             [KeyboardButton(text="🕘 Oxirgi amal"), KeyboardButton(text="🤖 AI Yordam")],
-            [KeyboardButton(text="🤖 AI Pro")],
         ],
         resize_keyboard=True,
     )
@@ -499,7 +497,7 @@ async def route_menu_button(message: types.Message, state: FSMContext):
         return await pro_last_action(message, state)
     if text == "🤖 AI Yordam":
         return await ai_help_start(message, state)
-    if text == "🤖 AI Pro":
+    if text == "🤖 AI Pro" and message.from_user.id in BOSS_IDS:
         return await pro_ai_prompt(message, state)
     if text == "📊 Boss Panel":
         return await pro_boss_panel(message)
@@ -785,7 +783,7 @@ async def handle_ai_question(callback: CallbackQuery, state: FSMContext):
             ["Umumiy statistikam"],
         ]
 
-    await process_ai_question(callback.message, questions[row_idx][col_idx], state, is_boss)
+    await process_ai_question(callback.message, questions[row_idx][col_idx], state, is_boss, requester_id=callback.from_user.id)
 
 
 @dp.callback_query(F.data == "ai_back_main")
@@ -808,11 +806,11 @@ async def ai_handle_chat(message: types.Message, state: FSMContext):
         await state.clear()
         return await route_menu_button(message, state)
 
-    await process_ai_question(message, text, state, is_boss)
+    await process_ai_question(message, text, state, is_boss, requester_id=message.from_user.id)
 
 
-async def process_ai_question(message: types.Message, question: str, state: FSMContext, is_boss: bool):
-    uid = message.from_user.id
+async def process_ai_question(message: types.Message, question: str, state: FSMContext, is_boss: bool, requester_id=None):
+    uid = requester_id or message.from_user.id
     msg = await message.answer("🔍 Ma'lumotlar tahlil qilinmoqda...")
 
     try:
@@ -1943,8 +1941,12 @@ async def pro_ai_answer(message: types.Message, state: FSMContext):
             name, cnt = min(counts.items(), key=lambda x: x[1])
             answer = f"📉 Bu hafta eng sust ishchi: {name}\n🧾 Savdolar soni: {cnt} ta"
 
-    await state.clear()
-    await message.answer(answer, reply_markup=get_boss_menu() if message.from_user.id in BOSS_IDS else get_worker_menu())
+    if message.from_user.id in BOSS_IDS:
+        await message.answer(answer)
+        await message.answer("❓ Yana savol bering yoki `⬅️ Orqaga` bosing.", reply_markup=get_back_kb(), parse_mode="Markdown")
+    else:
+        await state.clear()
+        await message.answer(answer, reply_markup=get_worker_menu())
 
 
 @dp.callback_query(F.data.startswith("day_"))
@@ -2085,6 +2087,11 @@ async def handle_debtors(message: types.Message):
         ]
     )
     await message.answer("🤝 Qarzi bor do'konlar:", reply_markup=kb)
+
+
+@dp.message(F.text == "🤝 Qarzdorlar Pro")
+async def handle_debtors_pro(message: types.Message):
+    await handle_debtors(message)
 
 
 @dp.callback_query(F.data.startswith("boss_debt_uid_"))
