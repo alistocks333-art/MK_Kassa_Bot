@@ -42,6 +42,9 @@ class AppStates(StatesGroup):
     edit_store_info = State()
     add_worker_id = State()
     add_worker_name = State()
+    pro_range_waiting = State()
+    pro_quick_edit_waiting = State()
+    pro_ai_waiting = State()
 
 
 # ================= YORDAMCHI =================
@@ -136,19 +139,28 @@ def get_worker_name(uid):
         return f"ID:{uid}"
 
 
+def date_head(text_value):
+    if not text_value:
+        return ""
+    return str(text_value).strip().split()[0]
+
+
 def parse_db_date_to_date(text_value):
     if not text_value:
         return None
     try:
-        return datetime.strptime(text_value[:10], "%d.%m.%Y").date()
+        return datetime.strptime(date_head(text_value), "%d.%m.%Y").date()
     except Exception:
-        return None
+        try:
+            return datetime.strptime(date_head(text_value), "%d.%m.%y").date()
+        except Exception:
+            return None
 
 
 def extract_month_keys(text_value):
     if not text_value:
         return set()
-    head = text_value[:10]
+    head = date_head(text_value)
     match = re.match(r"^(\d{2})\.(\d{2})\.(\d{2,4})$", head)
     if not match:
         return set()
@@ -172,6 +184,118 @@ def collect_available_months(rows):
             else:
                 months.add(f"{month}.{year}")
     return sorted(months, reverse=True)
+
+
+def parse_date_range(text: str):
+    text = (text or "").strip()
+    if re.fullmatch(r"\d{2}\.\d{4}", text):
+        return {"type": "month", "value": text}
+    m = re.fullmatch(r"(\d{2}\.\d{2}\.\d{2,4})\s*-\s*(\d{2}\.\d{2}\.\d{2,4})", text)
+    if m:
+        return {"type": "range", "from": m.group(1), "to": m.group(2)}
+    return None
+
+
+def parse_any_date(text):
+    for fmt_str in ("%d.%m.%Y", "%d.%m.%y"):
+        try:
+            return datetime.strptime(text, fmt_str).date()
+        except Exception:
+            pass
+    return None
+
+
+def in_selected_range(date_text: str, parsed):
+    head = date_head(date_text)
+    if parsed["type"] == "month":
+        return parsed["value"] in extract_month_keys(head)
+    current = parse_db_date_to_date(head)
+    start = parse_any_date(parsed["from"])
+    end = parse_any_date(parsed["to"])
+    return bool(current and start and end and start <= current <= end)
+
+
+def load_sales(worker_id=None):
+    conn = get_db()
+    cur = dict_cursor(conn)
+    if worker_id is None:
+        cur.execute(
+            "SELECT id, store_name, normalized_store, total, cash, debt, txn_type, date, worker_id, worker_name FROM sales ORDER BY id DESC"
+        )
+    else:
+        cur.execute(
+            "SELECT id, store_name, normalized_store, total, cash, debt, txn_type, date, worker_id, worker_name FROM sales WHERE worker_id = %s ORDER BY id DESC",
+            (worker_id,),
+        )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def load_workers():
+    conn = get_db()
+    cur = dict_cursor(conn)
+    cur.execute("SELECT user_id, name, active FROM users WHERE role = 'worker' ORDER BY name")
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def worker_summary(rows):
+    stores = {r["normalized_store"] for r in rows if r.get("normalized_store")}
+    total = sum((r["total"] or 0) for r in rows)
+    cash = sum((r["cash"] or 0) for r in rows)
+    debt = sum((r["total"] or 0) - (r["cash"] or 0) for r in rows)
+    by_store = {}
+    for r in rows:
+        store = r.get("normalized_store")
+        if not store:
+            continue
+        by_store.setdefault(store, 0)
+        by_store[store] += r["total"] or 0
+    best_store, best_value = ("yo'q", 0)
+    if by_store:
+        best_store, best_value = max(by_store.items(), key=lambda x: x[1])
+    avg = total / len(rows) if rows else 0
+    return {
+        "stores": len(stores),
+        "sales_count": len(rows),
+        "total": total,
+        "cash": cash,
+        "debt": debt,
+        "best_store": best_store,
+        "best_value": best_value,
+        "avg": avg,
+    }
+
+
+def fmt_card(store, total, cash, sale_date):
+    return (
+        f"🏪 Do'kon: {store}\n"
+        f"💰 Savdo: {fmt(total)}\n"
+        f"💵 Naqt: {fmt(cash)}\n"
+        f"📉 Qarz: {fmt((total or 0) - (cash or 0))}\n"
+        f"📅 Sana: {sale_date}"
+    )
+
+
+def export_xlsx(path, title, headers, rows):
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Hisobot"
+    ws["A1"] = title
+    ws["A1"].font = Font(bold=True, size=14)
+    for i, header in enumerate(headers, start=1):
+        ws.cell(row=3, column=i, value=header).font = Font(bold=True)
+    for r_idx, row in enumerate(rows, start=4):
+        for c_idx, value in enumerate(row, start=1):
+            ws.cell(row=r_idx, column=c_idx, value=value)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    wb.save(path)
+    return path
 
 
 async def notify_boss(worker_uid, store, total, cash, txn_type, date_str):
@@ -226,11 +350,11 @@ def get_back_kb():
 def get_worker_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="✍️ Savdo qo'shish"), KeyboardButton(text="📊 Kunlik kassa")],
-            [KeyboardButton(text="🔍 Do'kon qidirish"), KeyboardButton(text="🤝 Qarzi borlar")],
-            [KeyboardButton(text="🏪 Do'konlarim"), KeyboardButton(text="📅 Oylik kassa")],
-            [KeyboardButton(text="📅 Oylik hisobot"), KeyboardButton(text="💰 Oylik maosh")],
-            [KeyboardButton(text="🤖 AI Yordam")],
+            [KeyboardButton(text="📝 Savdo kiritish"), KeyboardButton(text="💵 Bugungi kassa")],
+            [KeyboardButton(text="🔍 Do'kon qidirish"), KeyboardButton(text="🧾 Do'konlarim")],
+            [KeyboardButton(text="📚 Oylik arxiv"), KeyboardButton(text="📈 Statistika")],
+            [KeyboardButton(text="💰 Oylik maosh"), KeyboardButton(text="🕘 Oxirgi amal")],
+            [KeyboardButton(text="🤖 AI Yordam"), KeyboardButton(text="🤖 AI Pro")],
         ],
         resize_keyboard=True,
     )
@@ -239,11 +363,13 @@ def get_worker_menu():
 def get_boss_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="💰 Kassa (Live)"), KeyboardButton(text="🤝 Qarzi borlar")],
-            [KeyboardButton(text="👥 Ishchilar"), KeyboardButton(text="🤖 AI Yordam")],
-            [KeyboardButton(text="📅 Oylik arxiv"), KeyboardButton(text="🏪 Barcha do'konlar")],
-            [KeyboardButton(text="📊 Eng yaxshi ishchilar"), KeyboardButton(text="🏆 Eng yaxshi do'konlar")],
-            [KeyboardButton(text="📅 Oylik kassa"), KeyboardButton(text="💰 Oylik maosh")],
+            [KeyboardButton(text="📊 Boss Panel"), KeyboardButton(text="💰 Kassa (Live)")],
+            [KeyboardButton(text="📤 Excel eksport"), KeyboardButton(text="📅 Sana filter")],
+            [KeyboardButton(text="🤝 Qarzdorlar Pro"), KeyboardButton(text="👥 Ishchi statistikasi")],
+            [KeyboardButton(text="🏪 Do'kon reytingi"), KeyboardButton(text="🔔 Eslatma")],
+            [KeyboardButton(text="📅 Oylik arxiv"), KeyboardButton(text="📅 Oylik kassa")],
+            [KeyboardButton(text="💰 Oylik maosh"), KeyboardButton(text="👥 Ishchilar")],
+            [KeyboardButton(text="🤖 AI Yordam"), KeyboardButton(text="🤖 AI Pro")],
         ],
         resize_keyboard=True,
     )
@@ -675,6 +801,7 @@ async def process_ai_question(message: types.Message, question: str, state: FSMC
             .replace("dokon", "do'kon")
             .replace("dokoni", "do'koni")
             .replace("dokonlar", "do'konlar")
+            .replace("qarzi borlarim", "qarzi bor do'konlarim")
         )
         answer = ""
 
@@ -786,7 +913,12 @@ async def process_ai_question(message: types.Message, question: str, state: FSMC
                 + "\n".join([f"{i + 1}. {name} (oxirgi: {last_sale})" for i, (name, last_sale) in enumerate(inactive[:3])])
             ) if inactive else "✅ Barchasi faol!"
 
-        elif ("qarzi bor do'kon" in q_norm or "qarzdor do'kon" in q_norm) and not is_boss:
+        elif (
+            "qarzi bor do'kon" in q_norm
+            or "qarzdor do'kon" in q_norm
+            or "qarzi bor do'konlarim" in q_norm
+            or "qarzdor do'konlarim" in q_norm
+        ) and not is_boss:
             cur.execute(
                 """
                 SELECT normalized_store, COALESCE(SUM(total)-SUM(cash),0) AS debt
@@ -1186,7 +1318,7 @@ async def worker_month_dates(callback: CallbackQuery):
 
     grouped = {}
     for row in raw_rows:
-        day = row["date"][:10]
+        day = date_head(row["date"])
         if month not in extract_month_keys(row["date"]):
             continue
         grouped.setdefault(day, 0)
@@ -1236,7 +1368,7 @@ async def mc_all_dates(callback: CallbackQuery):
     conn = get_db()
     cur = dict_cursor(conn)
     cur.execute("SELECT date FROM sales ORDER BY date DESC")
-    dates = sorted({r["date"][:10] for r in cur.fetchall() if month in extract_month_keys(r["date"])}, reverse=True)
+    dates = sorted({date_head(r["date"]) for r in cur.fetchall() if month in extract_month_keys(r["date"])}, reverse=True)
     conn.close()
     if not dates:
         return await callback.message.edit_text("📭 Yo'q.")
@@ -1330,7 +1462,7 @@ async def sel_worker_dates(callback: CallbackQuery):
         return await callback.message.edit_text("⚠️ Ishchi topilmadi.")
 
     cur.execute("SELECT date FROM sales WHERE worker_id = %s ORDER BY date DESC", (uid,))
-    dates = sorted({r["date"][:10] for r in cur.fetchall() if month in extract_month_keys(r["date"])}, reverse=True)
+    dates = sorted({date_head(r["date"]) for r in cur.fetchall() if month in extract_month_keys(r["date"])}, reverse=True)
     conn.close()
     if not dates:
         return await callback.message.edit_text("📭 Yo'q.")
@@ -1465,6 +1597,327 @@ async def daily_cash(message: types.Message):
         out += f"🏪 {r['store_name']} | 💵 {fmt(r['cash'])} | 🕒 {time_part}\n"
     out += f"\n💰 Jami: {fmt(total_cash)}"
     await message.answer(out)
+
+
+@dp.message(F.text == "📝 Savdo kiritish")
+async def pro_trade_alias(message: types.Message, state: FSMContext):
+    await trade_init(message, state)
+
+
+@dp.message(F.text == "💵 Bugungi kassa")
+async def pro_daily_cash_alias(message: types.Message):
+    await daily_cash(message)
+
+
+@dp.message(F.text == "🧾 Do'konlarim")
+async def pro_store_alias(message: types.Message):
+    await stores_list_cmd(message)
+
+
+@dp.message(F.text == "📚 Oylik arxiv")
+async def pro_worker_archive_alias(message: types.Message):
+    if message.from_user.id in BOSS_IDS:
+        await boss_monthly_archive(message)
+    else:
+        await handle_monthly_cash(message)
+
+
+@dp.message(F.text == "📈 Statistika")
+async def pro_my_stats(message: types.Message):
+    if message.from_user.id in BOSS_IDS:
+        return
+    rows = load_sales(message.from_user.id)
+    s = worker_summary(rows)
+    out = (
+        "📈 Sizning statistikangiz\n\n"
+        f"🧾 Savdolar: {s['sales_count']} ta\n"
+        f"🏪 Do'konlar: {s['stores']} ta\n"
+        f"💰 Jami savdo: {fmt(s['total'])}\n"
+        f"💵 Jami naqt: {fmt(s['cash'])}\n"
+        f"📉 Jami qarz: {fmt(s['debt'])}\n"
+        f"🏆 Eng yaxshi do'kon: {s['best_store']} ({fmt(s['best_value'])})\n"
+        f"📊 O'rtacha tushum: {fmt(s['avg'])}"
+    )
+    await message.answer(out)
+
+
+@dp.message(F.text == "📊 Boss Panel")
+async def pro_boss_panel(message: types.Message):
+    if message.from_user.id not in BOSS_IDS:
+        return
+    rows = load_sales()
+    today = date.today().strftime("%d.%m.%Y")
+    month_key = datetime.now().strftime("%m.%Y")
+    today_rows = [r for r in rows if r["date"].startswith(today)]
+    month_rows = [r for r in rows if month_key in extract_month_keys(r["date"])]
+    out = (
+        "📊 Boss Panel\n\n"
+        f"🧾 Bugungi savdolar: {len(today_rows)} ta\n"
+        f"💵 Bugungi naqt: {fmt(sum((r['cash'] or 0) for r in today_rows))}\n"
+        f"💰 Shu oy savdo: {fmt(sum((r['total'] or 0) for r in month_rows))}\n"
+        f"📉 Shu oy qarz: {fmt(sum((r['total'] or 0) - (r['cash'] or 0) for r in month_rows))}\n"
+        f"🏪 Do'konlar: {len({r['normalized_store'] for r in rows if r.get('normalized_store')})} ta\n"
+        f"👥 Ishchilar: {len(load_workers())} ta"
+    )
+    await message.answer(out)
+
+
+@dp.message(F.text == "👥 Ishchi statistikasi")
+async def pro_worker_stats(message: types.Message):
+    if message.from_user.id not in BOSS_IDS:
+        return await pro_my_stats(message)
+    workers = load_workers()
+    rows = load_sales()
+    out = "👥 Ishchi statistikasi\n\n"
+    for worker in workers:
+        w_rows = [r for r in rows if r["worker_id"] == worker["user_id"]]
+        s = worker_summary(w_rows)
+        out += (
+            f"👤 {worker['name']}\n"
+            f"💰 Oylik savdo: {fmt(s['total'])}\n"
+            f"💵 Jami naqt: {fmt(s['cash'])}\n"
+            f"🏆 Eng yaxshi do'kon: {s['best_store']}\n"
+            f"📉 Eng katta qarz: {fmt(s['debt'])}\n"
+            f"📊 O'rtacha tushum: {fmt(s['avg'])}\n\n"
+        )
+    await message.answer(out)
+
+
+@dp.message(F.text == "🏪 Do'kon reytingi")
+async def pro_store_ranking(message: types.Message):
+    if message.from_user.id not in BOSS_IDS:
+        return
+    rows = load_sales()
+    stats = {}
+    for r in rows:
+        store = r.get("normalized_store")
+        if not store:
+            continue
+        stats.setdefault(store, {"total": 0, "cash": 0, "debt": 0, "last": None})
+        stats[store]["total"] += r["total"] or 0
+        stats[store]["cash"] += r["cash"] or 0
+        stats[store]["debt"] += (r["total"] or 0) - (r["cash"] or 0)
+        dt = parse_db_date_to_date(r["date"])
+        if dt and (stats[store]["last"] is None or dt > stats[store]["last"]):
+            stats[store]["last"] = dt
+    if not stats:
+        return await message.answer("🏪 Ma'lumot yo'q.")
+    sales_top = sorted(stats.items(), key=lambda x: x[1]["total"], reverse=True)[:5]
+    cash_top = sorted(stats.items(), key=lambda x: x[1]["cash"], reverse=True)[:5]
+    debt_top = sorted(stats.items(), key=lambda x: x[1]["debt"], reverse=True)[:5]
+    slow_top = sorted(stats.items(), key=lambda x: x[1]["last"] or date.min)[:5]
+    out = "🏪 Do'kon reytingi\n\n"
+    out += "💰 Eng ko'p savdo:\n" + "\n".join([f"{i+1}. {s} - {fmt(v['total'])}" for i, (s, v) in enumerate(sales_top)]) + "\n\n"
+    out += "💵 Eng ko'p naqt:\n" + "\n".join([f"{i+1}. {s} - {fmt(v['cash'])}" for i, (s, v) in enumerate(cash_top)]) + "\n\n"
+    out += "📉 Eng ko'p qarz:\n" + "\n".join([f"{i+1}. {s} - {fmt(v['debt'])}" for i, (s, v) in enumerate(debt_top)]) + "\n\n"
+    out += "🐢 Eng sust do'kon:\n" + "\n".join([f"{i+1}. {s} - {(v['last'].strftime('%d.%m.%Y') if v['last'] else 'nomaʼlum')}" for i, (s, v) in enumerate(slow_top)])
+    await message.answer(out)
+
+
+@dp.message(F.text == "🔔 Eslatma")
+async def pro_alerts(message: types.Message):
+    if message.from_user.id not in BOSS_IDS:
+        return
+    rows = load_sales()
+    stats = {}
+    for r in rows:
+        store = r.get("normalized_store")
+        if not store:
+            continue
+        stats.setdefault(store, {"debt": 0, "last": None})
+        stats[store]["debt"] += (r["total"] or 0) - (r["cash"] or 0)
+        dt = parse_db_date_to_date(r["date"])
+        if dt and (stats[store]["last"] is None or dt > stats[store]["last"]):
+            stats[store]["last"] = dt
+    debt_alerts = [(s, v["debt"]) for s, v in stats.items() if v["debt"] >= 1000]
+    stale_alerts = [(s, v["last"]) for s, v in stats.items() if v["last"] and v["last"] < date.today() - timedelta(days=30)]
+    out = "🔔 Eslatmalar\n\n"
+    out += "📉 Katta qarzlar:\n"
+    out += "\n".join([f"• {s} - {fmt(v)}" for s, v in debt_alerts[:10]]) if debt_alerts else "• yo'q"
+    out += "\n\n⏰ Uzoqdan beri faol bo'lmaganlar:\n"
+    out += "\n".join([f"• {s} - {d.strftime('%d.%m.%Y')}" for s, d in stale_alerts[:10]]) if stale_alerts else "• yo'q"
+    await message.answer(out)
+
+
+@dp.message(F.text == "📅 Sana filter")
+async def pro_range_prompt(message: types.Message, state: FSMContext):
+    await state.set_state(AppStates.pro_range_waiting)
+    await message.answer("📅 Sana yuboring:\n`03.2026` yoki `01.03.2026 - 20.03.2026`", parse_mode="Markdown", reply_markup=get_back_kb())
+
+
+@dp.message(AppStates.pro_range_waiting)
+async def pro_range_report(message: types.Message, state: FSMContext):
+    if message.text == "⬅️ Orqaga":
+        await state.clear()
+        return await start_cmd(message, state)
+    parsed = parse_date_range(message.text or "")
+    if not parsed:
+        return await message.answer("⚠️ Format noto'g'ri. Misol: `03.2026` yoki `01.03.2026 - 20.03.2026`", parse_mode="Markdown")
+    rows = load_sales(None if message.from_user.id in BOSS_IDS else message.from_user.id)
+    filtered = [r for r in rows if in_selected_range(r["date"], parsed)]
+    total = sum((r["total"] or 0) for r in filtered)
+    cash = sum((r["cash"] or 0) for r in filtered)
+    debt = sum((r["total"] or 0) - (r["cash"] or 0) for r in filtered)
+    await state.clear()
+    await message.answer(
+        f"📅 Filter natijasi: {message.text}\n\n🧾 Savdolar: {len(filtered)} ta\n💰 Savdo: {fmt(total)}\n💵 Naqt: {fmt(cash)}\n📉 Qarz: {fmt(debt)}",
+        reply_markup=get_boss_menu() if message.from_user.id in BOSS_IDS else get_worker_menu(),
+    )
+
+
+@dp.message(F.text == "🕘 Oxirgi amal")
+async def pro_last_action(message: types.Message, state: FSMContext):
+    rows = load_sales(message.from_user.id)
+    if not rows:
+        return await message.answer("🕘 Oxirgi amal topilmadi.")
+    last_row = rows[0]
+    can_edit = False
+    if " " in last_row["date"]:
+        try:
+            dt = datetime.strptime(last_row["date"], "%d.%m.%Y %H:%M")
+            can_edit = datetime.now() - dt <= timedelta(minutes=5)
+        except Exception:
+            can_edit = False
+    await state.update_data(pro_edit_sale_id=last_row["id"])
+    kb_rows = []
+    if can_edit:
+        kb_rows.append([InlineKeyboardButton(text="✏️ Tez edit", callback_data="pro_quick_edit")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows) if kb_rows else None
+    await message.answer("🕘 Oxirgi amal\n\n" + fmt_card(last_row["store_name"], last_row["total"], last_row["cash"], last_row["date"]), reply_markup=kb)
+
+
+@dp.callback_query(F.data == "pro_quick_edit")
+async def pro_quick_edit_start(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.set_state(AppStates.pro_quick_edit_waiting)
+    await callback.message.answer("✏️ Yangi format yuboring:\n`summa naqt sana`\nMasalan: `3000 500 11.03.2026`", parse_mode="Markdown", reply_markup=get_back_kb())
+
+
+@dp.message(AppStates.pro_quick_edit_waiting)
+async def pro_quick_edit_save(message: types.Message, state: FSMContext):
+    if message.text == "⬅️ Orqaga":
+        await state.clear()
+        return await start_cmd(message, state)
+    data = await state.get_data()
+    sale_id = data.get("pro_edit_sale_id")
+    m = re.match(r"^\s*([\d.,]+)\s+([\d.,]+)\s+(\d{2}\.\d{2}\.\d{2,4})\s*$", message.text or "")
+    if not sale_id or not m:
+        return await message.answer("⚠️ Format noto'g'ri. Misol: `3000 500 11.03.2026`", parse_mode="Markdown")
+    total = safe_float(m.group(1))
+    cash = safe_float(m.group(2))
+    sale_date = m.group(3)
+    conn = get_db()
+    cur = dict_cursor(conn)
+    cur.execute("UPDATE sales SET total = %s, cash = %s, debt = %s, date = %s WHERE id = %s RETURNING store_name", (total, cash, total - cash, sale_date, sale_id))
+    row = cur.fetchone()
+    conn.commit()
+    conn.close()
+    await state.clear()
+    await message.answer("✅ Oxirgi amal yangilandi.\n\n" + fmt_card(row["store_name"], total, cash, sale_date))
+
+
+@dp.message(F.text == "📤 Excel eksport")
+async def pro_export_prompt(message: types.Message):
+    if message.from_user.id not in BOSS_IDS:
+        return
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💰 Oylik maosh", callback_data="exp_salary"), InlineKeyboardButton(text="📅 Oylik kassa", callback_data="exp_cash")],
+            [InlineKeyboardButton(text="🤝 Qarzdorlar", callback_data="exp_debt"), InlineKeyboardButton(text="👥 Ishchi kesimi", callback_data="exp_workers")],
+        ]
+    )
+    await message.answer("📤 Eksport turini tanlang:", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("exp_"))
+async def pro_export_run(callback: CallbackQuery):
+    await callback.answer()
+    if callback.from_user.id not in BOSS_IDS:
+        return
+    export_type = callback.data.replace("exp_", "")
+    rows = load_sales()
+    workers = load_workers()
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = os.path.join(os.path.dirname(__file__), "outputs")
+    try:
+        if export_type == "salary":
+            month_key = datetime.now().strftime("%m.%Y")
+            data = []
+            for worker in workers:
+                w_rows = [r for r in rows if r["worker_id"] == worker["user_id"] and month_key in extract_month_keys(r["date"])]
+                cash = sum((r["cash"] or 0) for r in w_rows)
+                percent = cash * 0.08
+                fixa = 150 if 1500 <= cash < 2000 else (200 if 2000 <= cash < 3000 else (300 if cash >= 3000 else 0))
+                data.append([worker["name"], cash, percent, fixa, percent + fixa])
+            path = export_xlsx(os.path.join(out_dir, f"salary_{ts}.xlsx"), f"Oylik maosh ({month_key})", ["Ishchi", "Naqt", "8% ulush", "Fiksa", "Jami"], data)
+        elif export_type == "cash":
+            data = [[r["worker_name"], r["store_name"], r["cash"], r["date"]] for r in rows if (r["cash"] or 0) > 0]
+            path = export_xlsx(os.path.join(out_dir, f"cash_{ts}.xlsx"), "Oylik kassa", ["Ishchi", "Do'kon", "Naqt", "Sana"], data)
+        elif export_type == "debt":
+            data = [[r["worker_name"], r["store_name"], (r["total"] or 0) - (r["cash"] or 0), r["date"]] for r in rows if ((r["total"] or 0) - (r["cash"] or 0)) > 0]
+            path = export_xlsx(os.path.join(out_dir, f"debt_{ts}.xlsx"), "Qarzdorlar", ["Ishchi", "Do'kon", "Qarz", "Sana"], data)
+        else:
+            data = []
+            for worker in workers:
+                s = worker_summary([r for r in rows if r["worker_id"] == worker["user_id"]])
+                data.append([worker["name"], s["sales_count"], s["total"], s["cash"], s["debt"], s["best_store"]])
+            path = export_xlsx(os.path.join(out_dir, f"workers_{ts}.xlsx"), "Ishchi kesimi", ["Ishchi", "Savdolar", "Jami savdo", "Naqt", "Qarz", "Eng yaxshi do'kon"], data)
+        await callback.message.answer(f"✅ Excel eksport tayyor:\n`{path}`", parse_mode="Markdown")
+    except Exception as e:
+        await callback.message.answer(f"❌ Eksport xatoligi: {e}")
+
+
+@dp.message(F.text == "🤖 AI Pro")
+async def pro_ai_prompt(message: types.Message, state: FSMContext):
+    await state.set_state(AppStates.pro_ai_waiting)
+    await message.answer(
+        "🤖 AI Pro savolingizni yozing.\nMasalan:\n`Ali bu oy qancha naqt yig'di?`\n`Bilol do'koni oxirgi marta qachon savdo qilgan?`\n`Qaysi ishchi bu hafta sust ishlagan?`",
+        parse_mode="Markdown",
+        reply_markup=get_back_kb(),
+    )
+
+
+@dp.message(AppStates.pro_ai_waiting)
+async def pro_ai_answer(message: types.Message, state: FSMContext):
+    if message.text == "⬅️ Orqaga":
+        await state.clear()
+        return await start_cmd(message, state)
+    q = (message.text or "").lower().replace("dokon", "do'kon").replace("dokoni", "do'koni")
+    rows = load_sales()
+    workers = load_workers()
+    answer = "❓ Savolni tushunmadim."
+
+    for worker in workers:
+        name = worker["name"].lower()
+        if name in q and "bu oy" in q and ("naqt" in q or "yig" in q):
+            month_key = datetime.now().strftime("%m.%Y")
+            cash = sum((r["cash"] or 0) for r in rows if r["worker_id"] == worker["user_id"] and month_key in extract_month_keys(r["date"]))
+            answer = f"👤 {worker['name']}\n💵 Bu oy naqt: {fmt(cash)}"
+            break
+
+    if "oxirgi marta" in q and "do'koni" in q:
+        for r in rows:
+            store = r.get("normalized_store")
+            if store and store.lower() in q:
+                latest = next((x for x in rows if x.get("normalized_store") == store), None)
+                if latest:
+                    answer = f"🏪 {store}\n📅 Oxirgi savdo: {latest['date']}"
+                break
+
+    if "bu hafta" in q and "sust" in q:
+        threshold = date.today() - timedelta(days=7)
+        counts = {}
+        for r in rows:
+            dt = parse_db_date_to_date(r["date"])
+            if dt and dt >= threshold:
+                counts.setdefault(r["worker_name"], 0)
+                counts[r["worker_name"]] += 1
+        if counts:
+            name, cnt = min(counts.items(), key=lambda x: x[1])
+            answer = f"📉 Bu hafta eng sust ishchi: {name}\n🧾 Savdolar soni: {cnt} ta"
+
+    await state.clear()
+    await message.answer(answer, reply_markup=get_boss_menu() if message.from_user.id in BOSS_IDS else get_worker_menu())
 
 
 @dp.callback_query(F.data.startswith("day_"))
