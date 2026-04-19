@@ -63,7 +63,6 @@ WORKER_MENU_BUTTONS = {
 
 BOSS_MENU_BUTTONS = {
     "📊 Boss Panel",
-    "📤 Excel eksport",
     "📅 Sana filter",
     "🤝 Qarzdorlar Pro",
     "👥 Ishchi statistikasi",
@@ -284,25 +283,6 @@ def fmt_card(store, total, cash, sale_date):
     )
 
 
-def export_xlsx(path, title, headers, rows):
-    from openpyxl import Workbook
-    from openpyxl.styles import Font
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Hisobot"
-    ws["A1"] = title
-    ws["A1"].font = Font(bold=True, size=14)
-    for i, header in enumerate(headers, start=1):
-        ws.cell(row=3, column=i, value=header).font = Font(bold=True)
-    for r_idx, row in enumerate(rows, start=4):
-        for c_idx, value in enumerate(row, start=1):
-            ws.cell(row=r_idx, column=c_idx, value=value)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    wb.save(path)
-    return path
-
-
 async def notify_boss(worker_uid, store, total, cash, txn_type, date_str):
     try:
         worker_name = get_worker_name(worker_uid)
@@ -369,12 +349,12 @@ def get_boss_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📊 Boss Panel"), KeyboardButton(text="💰 Kassa (Live)")],
-            [KeyboardButton(text="📤 Excel eksport"), KeyboardButton(text="📅 Sana filter")],
-            [KeyboardButton(text="🤝 Qarzdorlar Pro"), KeyboardButton(text="👥 Ishchi statistikasi")],
-            [KeyboardButton(text="🏪 Do'kon reytingi"), KeyboardButton(text="🔔 Eslatma")],
-            [KeyboardButton(text="📅 Oylik arxiv"), KeyboardButton(text="📅 Oylik kassa")],
-            [KeyboardButton(text="💰 Oylik maosh"), KeyboardButton(text="👥 Ishchilar")],
-            [KeyboardButton(text="🤖 AI Yordam"), KeyboardButton(text="🤖 AI Pro")],
+            [KeyboardButton(text="📅 Sana filter"), KeyboardButton(text="🤝 Qarzdorlar Pro")],
+            [KeyboardButton(text="👥 Ishchi statistikasi"), KeyboardButton(text="🏪 Do'kon reytingi")],
+            [KeyboardButton(text="🔔 Eslatma"), KeyboardButton(text="📅 Oylik arxiv")],
+            [KeyboardButton(text="📅 Oylik kassa"), KeyboardButton(text="💰 Oylik maosh")],
+            [KeyboardButton(text="👥 Ishchilar"), KeyboardButton(text="🤖 AI Yordam")],
+            [KeyboardButton(text="🤖 AI Pro")],
         ],
         resize_keyboard=True,
     )
@@ -501,8 +481,6 @@ async def route_menu_button(message: types.Message, state: FSMContext):
         return await pro_ai_prompt(message, state)
     if text == "📊 Boss Panel":
         return await pro_boss_panel(message)
-    if text == "📤 Excel eksport":
-        return await pro_export_prompt(message)
     if text == "📅 Sana filter":
         return await pro_range_prompt(message, state)
     if text == "👥 Ishchi statistikasi":
@@ -1839,57 +1817,6 @@ async def pro_quick_edit_save(message: types.Message, state: FSMContext):
     conn.close()
     await state.clear()
     await message.answer("✅ Oxirgi amal yangilandi.\n\n" + fmt_card(row["store_name"], total, cash, sale_date))
-
-
-@dp.message(F.text == "📤 Excel eksport")
-async def pro_export_prompt(message: types.Message):
-    if message.from_user.id not in BOSS_IDS:
-        return
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="💰 Oylik maosh", callback_data="exp_salary"), InlineKeyboardButton(text="📅 Oylik kassa", callback_data="exp_cash")],
-            [InlineKeyboardButton(text="🤝 Qarzdorlar", callback_data="exp_debt"), InlineKeyboardButton(text="👥 Ishchi kesimi", callback_data="exp_workers")],
-        ]
-    )
-    await message.answer("📤 Eksport turini tanlang:", reply_markup=kb)
-
-
-@dp.callback_query(F.data.startswith("exp_"))
-async def pro_export_run(callback: CallbackQuery):
-    await callback.answer()
-    if callback.from_user.id not in BOSS_IDS:
-        return
-    export_type = callback.data.replace("exp_", "")
-    rows = load_sales()
-    workers = load_workers()
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = os.path.join(os.path.dirname(__file__), "outputs")
-    try:
-        if export_type == "salary":
-            month_key = datetime.now().strftime("%m.%Y")
-            data = []
-            for worker in workers:
-                w_rows = [r for r in rows if r["worker_id"] == worker["user_id"] and month_key in extract_month_keys(r["date"])]
-                cash = sum((r["cash"] or 0) for r in w_rows)
-                percent = cash * 0.08
-                fixa = 150 if 1500 <= cash < 2000 else (200 if 2000 <= cash < 3000 else (300 if cash >= 3000 else 0))
-                data.append([worker["name"], cash, percent, fixa, percent + fixa])
-            path = export_xlsx(os.path.join(out_dir, f"salary_{ts}.xlsx"), f"Oylik maosh ({month_key})", ["Ishchi", "Naqt", "8% ulush", "Fiksa", "Jami"], data)
-        elif export_type == "cash":
-            data = [[r["worker_name"], r["store_name"], r["cash"], r["date"]] for r in rows if (r["cash"] or 0) > 0]
-            path = export_xlsx(os.path.join(out_dir, f"cash_{ts}.xlsx"), "Oylik kassa", ["Ishchi", "Do'kon", "Naqt", "Sana"], data)
-        elif export_type == "debt":
-            data = [[r["worker_name"], r["store_name"], (r["total"] or 0) - (r["cash"] or 0), r["date"]] for r in rows if ((r["total"] or 0) - (r["cash"] or 0)) > 0]
-            path = export_xlsx(os.path.join(out_dir, f"debt_{ts}.xlsx"), "Qarzdorlar", ["Ishchi", "Do'kon", "Qarz", "Sana"], data)
-        else:
-            data = []
-            for worker in workers:
-                s = worker_summary([r for r in rows if r["worker_id"] == worker["user_id"]])
-                data.append([worker["name"], s["sales_count"], s["total"], s["cash"], s["debt"], s["best_store"]])
-            path = export_xlsx(os.path.join(out_dir, f"workers_{ts}.xlsx"), "Ishchi kesimi", ["Ishchi", "Savdolar", "Jami savdo", "Naqt", "Qarz", "Eng yaxshi do'kon"], data)
-        await callback.message.answer(f"✅ Excel eksport tayyor:\n`{path}`", parse_mode="Markdown")
-    except Exception as e:
-        await callback.message.answer(f"❌ Eksport xatoligi: {e}")
 
 
 @dp.message(F.text == "🤖 AI Pro")
