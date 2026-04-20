@@ -284,6 +284,15 @@ def fmt_card(store, total, cash, sale_date):
     )
 
 
+def md_escape(text):
+    if text is None:
+        return ""
+    text = str(text)
+    for ch in ["\\", "_", "*", "[", "]", "(", ")", "~", "`", ">", "#", "+", "-", "=", "|", "{", "}", ".", "!"]:
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
+
 async def open_store_by_name(target, state: FSMContext, store: str, selected_worker_id=None):
     msg = target.message if isinstance(target, CallbackQuery) else target
     user_id = target.from_user.id if isinstance(target, CallbackQuery) else target.from_user.id
@@ -314,8 +323,9 @@ async def open_store_by_name(target, state: FSMContext, store: str, selected_wor
 
     total = res["total"]
     cash = res["cash"]
+    safe_store = md_escape(store.upper())
     out = (
-        f"🏪 **{store.upper()}** hisoboti:\n"
+        f"🏪 **{safe_store}** hisoboti:\n"
         f"💰 Umumiy savdo: {fmt(total)}\n"
         f"💵 Yig'ilgan: {fmt(cash)}\n"
         f"📉 Qoldiq qarz: {fmt(total - cash)}\n\n"
