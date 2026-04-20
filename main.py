@@ -293,7 +293,7 @@ def md_escape(text):
     return text
 
 
-async def open_store_by_name(target, state: FSMContext, store: str, selected_worker_id=None):
+async def open_store_by_name(target, state: FSMContext, store: str, selected_worker_id=None, back_callback=None):
     msg = target.message if isinstance(target, CallbackQuery) else target
     user_id = target.from_user.id if isinstance(target, CallbackQuery) else target.from_user.id
 
@@ -307,6 +307,7 @@ async def open_store_by_name(target, state: FSMContext, store: str, selected_wor
         await state.update_data(debt_worker_id=selected_worker_id)
     else:
         await state.update_data(debt_worker_id=None)
+    await state.update_data(store_back_callback=back_callback)
 
     data = await state.get_data()
     selected_uid = selected_worker_id or user_id
@@ -339,7 +340,10 @@ async def open_store_by_name(target, state: FSMContext, store: str, selected_wor
         elif h["txn_type"] == "qaytarish":
             out += f"📅 {h['date']}\n🔄 Qaytarish: {fmt(abs(h['total']))}\n\n"
 
-    if selected_worker_id and user_id in BOSS_IDS:
+    stored_back = (await state.get_data()).get("store_back_callback")
+    if stored_back:
+        back_row = [InlineKeyboardButton(text="⬅️ Orqaga", callback_data=stored_back)]
+    elif selected_worker_id and user_id in BOSS_IDS:
         back_row = [InlineKeyboardButton(text="⬅️ Qarzdorlar", callback_data=f"boss_debt_uid_{selected_worker_id}")]
     else:
         back_row = [InlineKeyboardButton(text="⬅️", callback_data="back_main" if user_id in BOSS_IDS else "stores_list")]
@@ -1315,7 +1319,7 @@ async def boss_all_store_open(callback: CallbackQuery, state: FSMContext):
     store = (data.get("boss_all_store_map") or {}).get(f"all_{idx}")
     if not store:
         return await callback.answer("⚠️ Do'kon topilmadi.", show_alert=True)
-    await open_store_by_name(callback, state, store)
+    await open_store_by_name(callback, state, store, back_callback="stores_filter_back_all")
 
 
 @dp.callback_query(F.data == "stores_filter_debt")
@@ -2306,7 +2310,22 @@ async def worker_debt_store_open(callback: CallbackQuery, state: FSMContext):
     store = (data.get("worker_debt_map") or {}).get(code)
     if not store:
         return await callback.answer("⚠️ Do'kon topilmadi.", show_alert=True)
-    await open_store_by_name(callback, state, store)
+    await open_store_by_name(callback, state, store, back_callback="worker_debt_back")
+
+
+@dp.callback_query(F.data == "worker_debt_back")
+async def worker_debt_back(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    data = await state.get_data()
+    mapping = data.get("worker_debt_map") or {}
+    if not mapping:
+        return await callback.message.edit_text("🤝 Qarzdor do'konlar topilmadi.")
+    items = list(mapping.items())
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=f"📉 {store}", callback_data=f"wdebt_{code}")] for code, store in items]
+    )
+    kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="back_main")])
+    await callback.message.edit_text("🤝 Qarzi bor do'konlar:", reply_markup=kb)
 
 
 @dp.callback_query(F.data.startswith("boss_debt_uid_"))
@@ -2360,7 +2379,7 @@ async def boss_debt_store_view(callback: CallbackQuery, state: FSMContext):
     store = (data.get("boss_debt_store_map") or {}).get(f"{wid}_{idx}")
     if not store:
         return await callback.answer("⚠️ Do'kon topilmadi.", show_alert=True)
-    await open_store_by_name(callback, state, store, selected_worker_id=wid)
+    await open_store_by_name(callback, state, store, selected_worker_id=wid, back_callback=f"boss_debt_uid_{wid}")
 
 
 # ================= DO'KONLAR =================
