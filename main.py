@@ -67,6 +67,7 @@ BOSS_MENU_BUTTONS = {
     "🤝 Qarzdorlar Pro",
     "👥 Ishchi statistikasi",
     "🏪 Do'kon reytingi",
+    "🏪 Barcha do'konlar",
     "🔔 Eslatma",
     "💰 Kassa (Live)",
     "👥 Ishchilar",
@@ -351,10 +352,10 @@ def get_boss_menu():
             [KeyboardButton(text="📊 Boss Panel"), KeyboardButton(text="💰 Kassa (Live)")],
             [KeyboardButton(text="📅 Sana filter"), KeyboardButton(text="🤝 Qarzdorlar Pro")],
             [KeyboardButton(text="👥 Ishchi statistikasi"), KeyboardButton(text="🏪 Do'kon reytingi")],
-            [KeyboardButton(text="🔔 Eslatma"), KeyboardButton(text="📅 Oylik arxiv")],
-            [KeyboardButton(text="📅 Oylik kassa"), KeyboardButton(text="💰 Oylik maosh")],
-            [KeyboardButton(text="👥 Ishchilar"), KeyboardButton(text="🤖 AI Yordam")],
-            [KeyboardButton(text="🤖 AI Pro")],
+            [KeyboardButton(text="🏪 Barcha do'konlar"), KeyboardButton(text="🔔 Eslatma")],
+            [KeyboardButton(text="📅 Oylik arxiv"), KeyboardButton(text="📅 Oylik kassa")],
+            [KeyboardButton(text="💰 Oylik maosh"), KeyboardButton(text="👥 Ishchilar")],
+            [KeyboardButton(text="🤖 AI Yordam"), KeyboardButton(text="🤖 AI Pro")],
         ],
         resize_keyboard=True,
     )
@@ -1142,35 +1143,228 @@ async def boss_monthly_archive(message: types.Message):
     await message.answer(out)
 
 
-@dp.message(F.text == "🏪 Barcha do'konlar")
-async def boss_all_stores(message: types.Message):
-    if message.from_user.id not in BOSS_IDS:
-        return
+async def render_boss_all_stores(target, state: FSMContext, filtered_stores=None, title="🏪 Barcha do'konlar"):
+    is_callback = isinstance(target, CallbackQuery)
+    msg = target.message if is_callback else target
     conn = get_db()
     cur = dict_cursor(conn)
     cur.execute(
         """
-        SELECT DISTINCT s.normalized_store, u.name
+        SELECT s.normalized_store,
+               COALESCE(MAX(u.name), '') AS worker_name,
+               COALESCE(SUM(s.total),0) AS total_sales,
+               COALESCE(SUM(s.cash),0) AS total_cash,
+               COALESCE(SUM(s.total)-SUM(s.cash),0) AS total_debt,
+               COUNT(s.id) AS sales_count
         FROM sales s
         JOIN users u ON s.worker_id = u.user_id
         WHERE s.normalized_store IS NOT NULL AND s.normalized_store != ''
-        ORDER BY u.name, s.normalized_store
+        GROUP BY s.normalized_store
+        ORDER BY s.normalized_store
         """
     )
     stores = cur.fetchall()
     conn.close()
+    if filtered_stores is not None:
+        stores = filtered_stores
 
     if not stores:
-        return await message.answer("🏪 Hozircha do'kon yo'q.")
+        if is_callback:
+            return await msg.edit_text("🏪 Hozircha do'kon yo'q.")
+        return await msg.answer("🏪 Hozircha do'kon yo'q.")
+
+    debt_count = sum(1 for s in stores if (s["total_debt"] or 0) > 0)
+    clean_count = len(stores) - debt_count
+    total_sales = sum((s["total_sales"] or 0) for s in stores)
+    total_cash = sum((s["total_cash"] or 0) for s in stores)
+
+    store_map = {f"all_{i}": s["normalized_store"] for i, s in enumerate(stores)}
+    await state.update_data(boss_all_store_map=store_map)
+
+    out = (
+        f"{title}\n\n"
+        f"📊 Jami do'konlar: {len(stores)} ta\n"
+        f"💰 Umumiy savdo: {fmt(total_sales)}\n"
+        f"💵 Umumiy naqt: {fmt(total_cash)}\n"
+        f"📉 Qarzdor do'konlar: {debt_count} ta\n"
+        f"✅ Qarzsiz do'konlar: {clean_count} ta\n\n"
+        "📋 Ro'yxat:\n"
+    )
+    for i, s in enumerate(stores, 1):
+        out += (
+            f"{i}. 🏪 {s['normalized_store']}\n"
+            f"👤 Ishchi: {s['worker_name'] or 'nomaʼlum'}\n"
+            f"💰 Savdo: {fmt(s['total_sales'])}\n"
+            f"💵 Naqt: {fmt(s['total_cash'])}\n"
+            f"📉 Qarz: {fmt(s['total_debt'])}\n\n"
+        )
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=f"🏪 {s['normalized_store']} (👤 {s['name']})", callback_data=f"store_{s['normalized_store']}")]
-            for s in stores
+            [InlineKeyboardButton(text=f"🏪 {s['normalized_store']}", callback_data=f"bstore_all_{i}")]
+            for i, s in enumerate(stores)
+        ]
+    )
+    kb.inline_keyboard.append(
+        [
+            InlineKeyboardButton(text="📉 Qarzdorlar", callback_data="stores_filter_debt"),
+            InlineKeyboardButton(text="✅ Qarzsizlar", callback_data="stores_filter_clean"),
+        ]
+    )
+    kb.inline_keyboard.append(
+        [
+            InlineKeyboardButton(text="👤 Ishchi bo'yicha", callback_data="stores_filter_workers"),
+            InlineKeyboardButton(text="💰 Savdo bo'yicha", callback_data="stores_filter_top"),
         ]
     )
     kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="back_main")])
-    await message.answer("🏪 Barcha do'konlar:", reply_markup=kb)
+    if is_callback:
+        await msg.edit_text(out, reply_markup=kb)
+    else:
+        await msg.answer(out, reply_markup=kb)
+
+
+@dp.message(F.text == "🏪 Barcha do'konlar")
+async def boss_all_stores(message: types.Message, state: FSMContext):
+    if message.from_user.id not in BOSS_IDS:
+        return
+    await render_boss_all_stores(message, state)
+
+
+@dp.callback_query(F.data.startswith("bstore_all_"))
+async def boss_all_store_open(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    idx = callback.data.replace("bstore_all_", "")
+    data = await state.get_data()
+    store = (data.get("boss_all_store_map") or {}).get(f"all_{idx}")
+    if not store:
+        return await callback.answer("⚠️ Do'kon topilmadi.", show_alert=True)
+    callback.data = f"store_{store}"
+    await store_details(callback, state)
+
+
+@dp.callback_query(F.data == "stores_filter_debt")
+async def stores_filter_debt(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    conn = get_db()
+    cur = dict_cursor(conn)
+    cur.execute(
+        """
+        SELECT s.normalized_store,
+               COALESCE(MAX(u.name), '') AS worker_name,
+               COALESCE(SUM(s.total),0) AS total_sales,
+               COALESCE(SUM(s.cash),0) AS total_cash,
+               COALESCE(SUM(s.total)-SUM(s.cash),0) AS total_debt,
+               COUNT(s.id) AS sales_count
+        FROM sales s
+        JOIN users u ON s.worker_id = u.user_id
+        WHERE s.normalized_store IS NOT NULL AND s.normalized_store != ''
+        GROUP BY s.normalized_store
+        HAVING COALESCE(SUM(s.total)-SUM(s.cash),0) > 0
+        ORDER BY total_debt DESC
+        """
+    )
+    stores = cur.fetchall()
+    conn.close()
+    await render_boss_all_stores(callback, state, stores, "🏪 Qarzdor do'konlar")
+
+
+@dp.callback_query(F.data == "stores_filter_clean")
+async def stores_filter_clean(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    conn = get_db()
+    cur = dict_cursor(conn)
+    cur.execute(
+        """
+        SELECT s.normalized_store,
+               COALESCE(MAX(u.name), '') AS worker_name,
+               COALESCE(SUM(s.total),0) AS total_sales,
+               COALESCE(SUM(s.cash),0) AS total_cash,
+               COALESCE(SUM(s.total)-SUM(s.cash),0) AS total_debt,
+               COUNT(s.id) AS sales_count
+        FROM sales s
+        JOIN users u ON s.worker_id = u.user_id
+        WHERE s.normalized_store IS NOT NULL AND s.normalized_store != ''
+        GROUP BY s.normalized_store
+        HAVING COALESCE(SUM(s.total)-SUM(s.cash),0) <= 0
+        ORDER BY s.normalized_store
+        """
+    )
+    stores = cur.fetchall()
+    conn.close()
+    await render_boss_all_stores(callback, state, stores, "🏪 Qarzsiz do'konlar")
+
+
+@dp.callback_query(F.data == "stores_filter_top")
+async def stores_filter_top(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    conn = get_db()
+    cur = dict_cursor(conn)
+    cur.execute(
+        """
+        SELECT s.normalized_store,
+               COALESCE(MAX(u.name), '') AS worker_name,
+               COALESCE(SUM(s.total),0) AS total_sales,
+               COALESCE(SUM(s.cash),0) AS total_cash,
+               COALESCE(SUM(s.total)-SUM(s.cash),0) AS total_debt,
+               COUNT(s.id) AS sales_count
+        FROM sales s
+        JOIN users u ON s.worker_id = u.user_id
+        WHERE s.normalized_store IS NOT NULL AND s.normalized_store != ''
+        GROUP BY s.normalized_store
+        ORDER BY total_sales DESC
+        """
+    )
+    stores = cur.fetchall()
+    conn.close()
+    await render_boss_all_stores(callback, state, stores, "🏪 Savdo bo'yicha do'konlar")
+
+
+@dp.callback_query(F.data == "stores_filter_workers")
+async def stores_filter_workers(callback: CallbackQuery):
+    await callback.answer()
+    workers = load_workers()
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=f"👤 {w['name']}", callback_data=f"stores_by_worker_{w['user_id']}")] for w in workers]
+    )
+    kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="stores_filter_back_all")])
+    await callback.message.edit_text("👥 Ishchini tanlang:", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("stores_by_worker_"))
+async def stores_by_worker(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    worker_id = int(callback.data.replace("stores_by_worker_", ""))
+    conn = get_db()
+    cur = dict_cursor(conn)
+    cur.execute(
+        """
+        SELECT s.normalized_store,
+               COALESCE(MAX(u.name), '') AS worker_name,
+               COALESCE(SUM(s.total),0) AS total_sales,
+               COALESCE(SUM(s.cash),0) AS total_cash,
+               COALESCE(SUM(s.total)-SUM(s.cash),0) AS total_debt,
+               COUNT(s.id) AS sales_count
+        FROM sales s
+        JOIN users u ON s.worker_id = u.user_id
+        WHERE s.normalized_store IS NOT NULL AND s.normalized_store != '' AND s.worker_id = %s
+        GROUP BY s.normalized_store
+        ORDER BY s.normalized_store
+        """,
+        (worker_id,),
+    )
+    stores = cur.fetchall()
+    cur.execute("SELECT name FROM users WHERE user_id = %s", (worker_id,))
+    worker = cur.fetchone()
+    conn.close()
+    title = f"🏪 {worker['name'] if worker else 'Ishchi'} do'konlari"
+    await render_boss_all_stores(callback, state, stores, title)
+
+
+@dp.callback_query(F.data == "stores_filter_back_all")
+async def stores_filter_back_all(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await render_boss_all_stores(callback, state)
 
 
 @dp.message(F.text == "📊 Eng yaxshi ishchilar")
@@ -1387,6 +1581,8 @@ async def mc_all_dates(callback: CallbackQuery):
 async def day_all_summary(callback: CallbackQuery):
     await callback.answer()
     day = callback.data.replace("day_all_", "")
+    month_options = sorted(extract_month_keys(day), reverse=True)
+    back_month = month_options[0] if month_options else datetime.now().strftime("%m.%Y")
     conn = get_db()
     cur = dict_cursor(conn)
     cur.execute(
@@ -1416,6 +1612,7 @@ async def day_all_summary(callback: CallbackQuery):
 
     out = f"💰 {day}\n"
     current_worker = ""
+    grand_total = 0
     for r in rows:
         if r["worker_name"] != current_worker:
             if current_worker:
@@ -1423,13 +1620,15 @@ async def day_all_summary(callback: CallbackQuery):
             current_worker = r["worker_name"]
             out += f"👤 **{current_worker}**:\n"
         out += f"🏪 {r['store_name']} - {fmt(r['cash'])}\n"
+        grand_total += r["cash"] or 0
     if current_worker:
         out += f"✅ {current_worker} - Jami: {fmt(totals.get(current_worker, 0))}"
+    out += f"\n\n💵 UMUMIY JAMI: {fmt(grand_total)}"
 
     await callback.message.edit_text(
         out,
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Sanalar", callback_data="back_main")]]),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Sanalar", callback_data=f"mc_all_{back_month}")]]),
     )
 
 
@@ -1954,7 +2153,7 @@ async def monthly_report(message: types.Message):
 
 # ================= QARZI BORLAR =================
 @dp.message(F.text == "🤝 Qarzi borlar")
-async def handle_debtors(message: types.Message):
+async def handle_debtors(message: types.Message, state: FSMContext):
     uid = message.from_user.id
     conn = get_db()
     cur = dict_cursor(conn)
@@ -1980,6 +2179,7 @@ async def handle_debtors(message: types.Message):
         out = "🤝 Qarzi bor ishchilar:\n"
         out += "\n".join([f"👤 {r['name']} - {fmt(r['bal'])}" for r in res])
         out += f"\n💰 Umumiy: {fmt(sum(r['bal'] for r in res))}"
+        await state.update_data(boss_debt_workers={str(r["user_id"]): r["name"] for r in res})
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text=f"👤 {r['name']} ({fmt(r['bal'])})", callback_data=f"boss_debt_uid_{r['user_id']}")]
@@ -2007,22 +2207,36 @@ async def handle_debtors(message: types.Message):
     if not res:
         return await message.answer("✅ Qarz yo'q.")
 
+    mapping = {f"s{i}": r["normalized_store"] for i, r in enumerate(res)}
+    await state.update_data(worker_debt_map=mapping)
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=f"📉 {r['normalized_store']} ({fmt(r['bal'])})", callback_data=f"store_{r['normalized_store']}")]
-            for r in res
+            [InlineKeyboardButton(text=f"📉 {r['normalized_store']} ({fmt(r['bal'])})", callback_data=f"wdebt_{code}")]
+            for code, r in zip(mapping.keys(), res)
         ]
     )
     await message.answer("🤝 Qarzi bor do'konlar:", reply_markup=kb)
 
 
 @dp.message(F.text == "🤝 Qarzdorlar Pro")
-async def handle_debtors_pro(message: types.Message):
-    await handle_debtors(message)
+async def handle_debtors_pro(message: types.Message, state: FSMContext):
+    await handle_debtors(message, state)
+
+
+@dp.callback_query(F.data.startswith("wdebt_"))
+async def worker_debt_store_open(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    code = callback.data.replace("wdebt_", "")
+    data = await state.get_data()
+    store = (data.get("worker_debt_map") or {}).get(code)
+    if not store:
+        return await callback.answer("⚠️ Do'kon topilmadi.", show_alert=True)
+    callback.data = f"store_{store}"
+    await store_details(callback, state)
 
 
 @dp.callback_query(F.data.startswith("boss_debt_uid_"))
-async def boss_debt_detail(callback: CallbackQuery):
+async def boss_debt_detail(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     try:
         wid = int(callback.data.replace("boss_debt_uid_", ""))
@@ -2050,9 +2264,10 @@ async def boss_debt_detail(callback: CallbackQuery):
         out = f"👤 {w_name} qarzlari:\n"
         out += "\n".join([f"🏪 {s['normalized_store']} | {fmt(s['t'] - s['c'])}" for s in stores]) if stores else "✅ Yo'q"
 
+        await state.update_data(boss_debt_store_map={f"{wid}_{i}": s["normalized_store"] for i, s in enumerate(stores)})
         kb_rows = [
-            [InlineKeyboardButton(text=f"📖 {s['normalized_store']}", callback_data=f"boss_debt_store_{wid}_{s['normalized_store']}")]
-            for s in stores
+            [InlineKeyboardButton(text=f"📖 {s['normalized_store']}", callback_data=f"boss_debt_store_{wid}_{i}")]
+            for i, s in enumerate(stores)
         ]
         kb_rows.append([InlineKeyboardButton(text="⬅️", callback_data="back_main")])
         kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
@@ -2065,8 +2280,12 @@ async def boss_debt_detail(callback: CallbackQuery):
 @dp.callback_query(F.data.startswith("boss_debt_store_"))
 async def boss_debt_store_view(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
-    wid_text, store = callback.data.replace("boss_debt_store_", "").split("_", 1)
+    wid_text, idx = callback.data.replace("boss_debt_store_", "").split("_", 1)
     wid = int(wid_text)
+    data = await state.get_data()
+    store = (data.get("boss_debt_store_map") or {}).get(f"{wid}_{idx}")
+    if not store:
+        return await callback.answer("⚠️ Do'kon topilmadi.", show_alert=True)
     await state.update_data(debt_worker_id=wid, current_store=store)
 
     conn = get_db()
@@ -2620,10 +2839,12 @@ Qoidalar: 1. "naxt/naqt/pul" yonidagi raqam cash.
             f"📅 Sana: {date_str}",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Bekor", callback_data=f"cancel_req_{sale_id}")]]),
         )
+        await message.answer("📝 Yana savdo kiriting yoki `⬅️ Orqaga` bosing.", parse_mode="Markdown", reply_markup=get_back_kb())
+        await state.set_state(AppStates.waiting_trade)
+        return
     except Exception as e:
         await msg.edit_text(f"❌ {e}")
-
-    await state.clear()
+        return
 
 
 @dp.callback_query(F.data.startswith("cancel_req_"))
