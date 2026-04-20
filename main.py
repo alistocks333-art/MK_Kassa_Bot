@@ -284,6 +284,72 @@ def fmt_card(store, total, cash, sale_date):
     )
 
 
+async def open_store_by_name(target, state: FSMContext, store: str, selected_worker_id=None):
+    msg = target.message if isinstance(target, CallbackQuery) else target
+    user_id = target.from_user.id if isinstance(target, CallbackQuery) else target.from_user.id
+
+    if not store:
+        if isinstance(target, CallbackQuery):
+            return await target.answer("⚠️ Do'kon topilmadi.", show_alert=True)
+        return await msg.answer("⚠️ Do'kon topilmadi.")
+
+    await state.update_data(current_store=store)
+    if selected_worker_id:
+        await state.update_data(debt_worker_id=selected_worker_id)
+    else:
+        await state.update_data(debt_worker_id=None)
+
+    data = await state.get_data()
+    selected_uid = selected_worker_id or user_id
+    w_cond, w_params = get_worker_filter(selected_uid)
+    full_params = (store,) + w_params
+
+    conn = get_db()
+    cur = dict_cursor(conn)
+    cur.execute("SELECT COALESCE(SUM(total),0) AS total, COALESCE(SUM(cash),0) AS cash FROM sales WHERE normalized_store = %s " + w_cond, full_params)
+    res = cur.fetchone()
+    cur.execute("SELECT txn_type, total, cash, date FROM sales WHERE normalized_store = %s " + w_cond + " ORDER BY id DESC LIMIT 15", full_params)
+    hist = cur.fetchall()
+    conn.close()
+
+    total = res["total"]
+    cash = res["cash"]
+    out = (
+        f"🏪 **{store.upper()}** hisoboti:\n"
+        f"💰 Umumiy savdo: {fmt(total)}\n"
+        f"💵 Yig'ilgan: {fmt(cash)}\n"
+        f"📉 Qoldiq qarz: {fmt(total - cash)}\n\n"
+        f"📜 Harakatlar:\n"
+    )
+    for h in hist:
+        if h["txn_type"] == "savdo":
+            out += f"📅 {h['date']}\n💰 Savdo: {fmt(h['total'])}\n💵 Naqt: {fmt(h['cash'])}\n📉 Qarz: {fmt((h['total'] or 0) - (h['cash'] or 0))}\n\n"
+        elif h["txn_type"] == "naqt":
+            out += f"📅 {h['date']}\n💵 Naqt kiritildi: {fmt(h['cash'])}\n\n"
+        elif h["txn_type"] == "qaytarish":
+            out += f"📅 {h['date']}\n🔄 Qaytarish: {fmt(abs(h['total']))}\n\n"
+
+    if selected_worker_id and user_id in BOSS_IDS:
+        back_row = [InlineKeyboardButton(text="⬅️ Qarzdorlar", callback_data=f"boss_debt_uid_{selected_worker_id}")]
+    else:
+        back_row = [InlineKeyboardButton(text="⬅️", callback_data="back_main" if user_id in BOSS_IDS else "stores_list")]
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💵 Naqt", callback_data="act_cash"), InlineKeyboardButton(text="🔄 Qaytarish", callback_data="act_return")],
+            [InlineKeyboardButton(text="💰 Savdo", callback_data="act_trade"), InlineKeyboardButton(text="👤 Do'konchi", callback_data="act_owner")],
+            back_row,
+        ]
+    )
+    try:
+        if isinstance(target, CallbackQuery):
+            await msg.edit_text(out, reply_markup=kb, parse_mode="Markdown")
+        else:
+            await msg.answer(out, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await msg.answer(out, reply_markup=kb, parse_mode="Markdown")
+
+
 async def notify_boss(worker_uid, store, total, cash, txn_type, date_str):
     try:
         worker_name = get_worker_name(worker_uid)
@@ -1239,8 +1305,7 @@ async def boss_all_store_open(callback: CallbackQuery, state: FSMContext):
     store = (data.get("boss_all_store_map") or {}).get(f"all_{idx}")
     if not store:
         return await callback.answer("⚠️ Do'kon topilmadi.", show_alert=True)
-    callback.data = f"store_{store}"
-    await store_details(callback, state)
+    await open_store_by_name(callback, state, store)
 
 
 @dp.callback_query(F.data == "stores_filter_debt")
@@ -2231,8 +2296,7 @@ async def worker_debt_store_open(callback: CallbackQuery, state: FSMContext):
     store = (data.get("worker_debt_map") or {}).get(code)
     if not store:
         return await callback.answer("⚠️ Do'kon topilmadi.", show_alert=True)
-    callback.data = f"store_{store}"
-    await store_details(callback, state)
+    await open_store_by_name(callback, state, store)
 
 
 @dp.callback_query(F.data.startswith("boss_debt_uid_"))
@@ -2286,38 +2350,7 @@ async def boss_debt_store_view(callback: CallbackQuery, state: FSMContext):
     store = (data.get("boss_debt_store_map") or {}).get(f"{wid}_{idx}")
     if not store:
         return await callback.answer("⚠️ Do'kon topilmadi.", show_alert=True)
-    await state.update_data(debt_worker_id=wid, current_store=store)
-
-    conn = get_db()
-    cur = dict_cursor(conn)
-    cur.execute("SELECT COALESCE(SUM(total),0) AS total, COALESCE(SUM(cash),0) AS cash FROM sales WHERE normalized_store = %s AND worker_id = %s", (store, wid))
-    res = cur.fetchone()
-    cur.execute(
-        "SELECT txn_type, total, cash, date FROM sales WHERE normalized_store = %s AND worker_id = %s ORDER BY id DESC LIMIT 10",
-        (store, wid),
-    )
-    hist = cur.fetchall()
-    conn.close()
-
-    total = res["total"]
-    cash = res["cash"]
-    out = f"🏪 **{store.upper()}**\n💰 {fmt(total)} | 💵 {fmt(cash)} | 📉 {fmt(total - cash)}\n\n📜:\n"
-    for h in hist:
-        symbol = "📦" if h["txn_type"] == "savdo" else ("💵" if h["txn_type"] == "naqt" else "🔄")
-        amount = h["cash"] if h["txn_type"] == "naqt" else abs(h["total"])
-        out += f"📅 {h['date']} | {symbol} {fmt(amount)}\n"
-
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="💵 Naqt", callback_data="act_cash"), InlineKeyboardButton(text="🔄 Qaytarish", callback_data="act_return")],
-            [InlineKeyboardButton(text="💰 Savdo", callback_data="act_trade"), InlineKeyboardButton(text="👤 Do'konchi", callback_data="act_owner")],
-            [InlineKeyboardButton(text="⬅️ Qarzdorlar", callback_data=f"boss_debt_uid_{wid}")],
-        ]
-    )
-    try:
-        await callback.message.edit_text(out, reply_markup=kb, parse_mode="Markdown")
-    except Exception:
-        await callback.message.answer(out, reply_markup=kb, parse_mode="Markdown")
+    await open_store_by_name(callback, state, store, selected_worker_id=wid)
 
 
 # ================= DO'KONLAR =================
