@@ -45,6 +45,7 @@ class AppStates(StatesGroup):
     pro_range_waiting = State()
     pro_quick_edit_waiting = State()
     pro_ai_waiting = State()
+    boss_edit_sale_waiting = State()
 
 
 # ================= YORDAMCHI =================
@@ -318,7 +319,7 @@ async def open_store_by_name(target, state: FSMContext, store: str, selected_wor
     cur = dict_cursor(conn)
     cur.execute("SELECT COALESCE(SUM(total),0) AS total, COALESCE(SUM(cash),0) AS cash FROM sales WHERE normalized_store = %s " + w_cond, full_params)
     res = cur.fetchone()
-    cur.execute("SELECT txn_type, total, cash, date FROM sales WHERE normalized_store = %s " + w_cond + " ORDER BY id DESC LIMIT 15", full_params)
+    cur.execute("SELECT id, txn_type, total, cash, date FROM sales WHERE normalized_store = %s " + w_cond + " ORDER BY id DESC LIMIT 15", full_params)
     hist = cur.fetchall()
     conn.close()
 
@@ -348,13 +349,15 @@ async def open_store_by_name(target, state: FSMContext, store: str, selected_wor
     else:
         back_row = [InlineKeyboardButton(text="⬅️", callback_data="back_main" if user_id in BOSS_IDS else "stores_list")]
 
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="💵 Naqt", callback_data="act_cash"), InlineKeyboardButton(text="🔄 Qaytarish", callback_data="act_return")],
-            [InlineKeyboardButton(text="💰 Savdo", callback_data="act_trade"), InlineKeyboardButton(text="👤 Do'konchi", callback_data="act_owner")],
-            back_row,
-        ]
-    )
+    action_rows = [
+        [InlineKeyboardButton(text="💵 Naqt", callback_data="act_cash"), InlineKeyboardButton(text="🔄 Qaytarish", callback_data="act_return")],
+        [InlineKeyboardButton(text="💰 Savdo", callback_data="act_trade"), InlineKeyboardButton(text="👤 Do'konchi", callback_data="act_owner")],
+    ]
+    if user_id in BOSS_IDS and hist:
+        await state.update_data(boss_edit_sale_id=hist[0]["id"])
+        action_rows.append([InlineKeyboardButton(text="✏️ Oxirgi amalni edit", callback_data="boss_edit_last_sale")])
+    action_rows.append(back_row)
+    kb = InlineKeyboardMarkup(inline_keyboard=action_rows)
     try:
         if isinstance(target, CallbackQuery):
             await msg.edit_text(out, reply_markup=kb, parse_mode="Markdown")
@@ -1690,19 +1693,19 @@ async def day_all_summary(callback: CallbackQuery):
     totals = {r["worker_name"]: r["total"] for r in cur.fetchall()}
     conn.close()
 
-    out = f"💰 {day}\n"
+    out = f"💰 {md_escape(day)}\n"
     current_worker = ""
     grand_total = 0
     for r in rows:
         if r["worker_name"] != current_worker:
             if current_worker:
-                out += f"✅ {current_worker} - Jami: {fmt(totals.get(current_worker, 0))}\n\n"
+                out += f"✅ {md_escape(current_worker)} - Jami: {fmt(totals.get(current_worker, 0))}\n\n"
             current_worker = r["worker_name"]
-            out += f"👤 **{current_worker}**:\n"
-        out += f"🏪 {r['store_name']} - {fmt(r['cash'])}\n"
+            out += f"👤 **{md_escape(current_worker)}**:\n"
+        out += f"🏪 {md_escape(r['store_name'])} - {fmt(r['cash'])}\n"
         grand_total += r["cash"] or 0
     if current_worker:
-        out += f"✅ {current_worker} - Jami: {fmt(totals.get(current_worker, 0))}"
+        out += f"✅ {md_escape(current_worker)} - Jami: {fmt(totals.get(current_worker, 0))}"
     out += f"\n\n💵 UMUMIY JAMI: {fmt(grand_total)}"
 
     await callback.message.edit_text(
@@ -2096,6 +2099,48 @@ async def pro_quick_edit_save(message: types.Message, state: FSMContext):
     conn.close()
     await state.clear()
     await message.answer("✅ Oxirgi amal yangilandi.\n\n" + fmt_card(row["store_name"], total, cash, sale_date))
+
+
+@dp.callback_query(F.data == "boss_edit_last_sale")
+async def boss_edit_last_sale(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.from_user.id not in BOSS_IDS:
+        return
+    await state.set_state(AppStates.boss_edit_sale_waiting)
+    await callback.message.answer(
+        "✏️ Yangi format yuboring:\n`summa naqt sana`\nMasalan: `3000 500 22.04.2026`",
+        parse_mode="Markdown",
+        reply_markup=get_back_kb(),
+    )
+
+
+@dp.message(AppStates.boss_edit_sale_waiting)
+async def boss_edit_sale_save(message: types.Message, state: FSMContext):
+    if message.text == "⬅️ Orqaga":
+        await state.clear()
+        return await start_cmd(message, state)
+    if message.from_user.id not in BOSS_IDS:
+        await state.clear()
+        return
+    data = await state.get_data()
+    sale_id = data.get("boss_edit_sale_id")
+    m = re.match(r"^\s*([\d.,]+)\s+([\d.,]+)\s+(\d{2}\.\d{2}\.\d{2,4})\s*$", message.text or "")
+    if not sale_id or not m:
+        return await message.answer("⚠️ Format noto'g'ri. Misol: `3000 500 22.04.2026`", parse_mode="Markdown")
+    total = safe_float(m.group(1))
+    cash = safe_float(m.group(2))
+    sale_date = m.group(3)
+    conn = get_db()
+    cur = dict_cursor(conn)
+    cur.execute(
+        "UPDATE sales SET total = %s, cash = %s, debt = %s, date = %s WHERE id = %s RETURNING store_name",
+        (total, cash, total - cash, sale_date, sale_id),
+    )
+    row = cur.fetchone()
+    conn.commit()
+    conn.close()
+    await state.clear()
+    await message.answer("✅ Boss tomonidan amal yangilandi.\n\n" + fmt_card(row["store_name"], total, cash, sale_date), reply_markup=get_boss_menu())
 
 
 @dp.message(F.text == "🤖 AI Pro")
