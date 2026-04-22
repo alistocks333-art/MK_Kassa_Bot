@@ -355,6 +355,10 @@ async def open_store_by_name(target, state: FSMContext, store: str, selected_wor
     ]
     if user_id in BOSS_IDS and hist:
         await state.update_data(boss_edit_sale_id=hist[0]["id"])
+        await state.update_data(boss_edit_sale_txn=hist[0]["txn_type"])
+        await state.update_data(boss_edit_sale_total=hist[0]["total"] or 0)
+        await state.update_data(boss_edit_sale_cash=hist[0]["cash"] or 0)
+        await state.update_data(boss_edit_sale_date=date_head(hist[0]["date"]))
         action_rows.append([InlineKeyboardButton(text="✏️ Oxirgi amalni edit", callback_data="boss_edit_last_sale")])
     action_rows.append(back_row)
     kb = InlineKeyboardMarkup(inline_keyboard=action_rows)
@@ -2106,17 +2110,46 @@ async def boss_edit_last_sale(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     if callback.from_user.id not in BOSS_IDS:
         return
+    data = await state.get_data()
+    txn_type = data.get("boss_edit_sale_txn")
+    total = data.get("boss_edit_sale_total", 0) or 0
+    cash = data.get("boss_edit_sale_cash", 0) or 0
+    sale_date = data.get("boss_edit_sale_date", "")
     await state.set_state(AppStates.boss_edit_sale_waiting)
-    await callback.message.answer(
-        "✏️ Yangi format yuboring:\n`summa naqt sana`\nMasalan: `3000 500 22.04.2026`",
-        parse_mode="Markdown",
-        reply_markup=get_back_kb(),
-    )
+    if txn_type == "naqt":
+        prompt = (
+            "?? Oxirgi amal: Naqt\n\n"
+            + f"?? Hozirgi naqt: {fmt(cash)}\n"
+            + f"?? Hozirgi sana: {sale_date}\n\n"
+            + "Yangi format yuboring:\n"
+            + "`naqt sana`\n"
+            + "Masalan: `50 22.04.2026`"
+        )
+    elif txn_type == "qaytarish":
+        prompt = (
+            "?? Oxirgi amal: Qaytarish\n\n"
+            + f"?? Hozirgi summa: {fmt(abs(total))}\n"
+            + f"?? Hozirgi sana: {sale_date}\n\n"
+            + "Yangi format yuboring:\n"
+            + "`summa sana`\n"
+            + "Masalan: `200 22.04.2026`"
+        )
+    else:
+        prompt = (
+            "?? Oxirgi amal: Savdo\n\n"
+            + f"?? Hozirgi savdo: {fmt(total)}\n"
+            + f"?? Hozirgi naqt: {fmt(cash)}\n"
+            + f"?? Hozirgi sana: {sale_date}\n\n"
+            + "Yangi format yuboring:\n"
+            + "`summa naqt sana`\n"
+            + "Masalan: `3000 500 22.04.2026`"
+        )
+    await callback.message.answer(prompt, parse_mode="Markdown", reply_markup=get_back_kb())
 
 
 @dp.message(AppStates.boss_edit_sale_waiting)
 async def boss_edit_sale_save(message: types.Message, state: FSMContext):
-    if message.text == "⬅️ Orqaga":
+    if message.text and "Orqaga" in message.text:
         await state.clear()
         return await start_cmd(message, state)
     if message.from_user.id not in BOSS_IDS:
@@ -2124,12 +2157,38 @@ async def boss_edit_sale_save(message: types.Message, state: FSMContext):
         return
     data = await state.get_data()
     sale_id = data.get("boss_edit_sale_id")
-    m = re.match(r"^\s*([\d.,]+)\s+([\d.,]+)\s+(\d{2}\.\d{2}\.\d{2,4})\s*$", message.text or "")
-    if not sale_id or not m:
-        return await message.answer("⚠️ Format noto'g'ri. Misol: `3000 500 22.04.2026`", parse_mode="Markdown")
-    total = safe_float(m.group(1))
-    cash = safe_float(m.group(2))
-    sale_date = m.group(3)
+    txn_type = data.get("boss_edit_sale_txn")
+    text = (message.text or "").strip()
+    if not sale_id:
+        return await message.answer("?? Amal topilmadi.")
+
+    total = None
+    cash = None
+    sale_date = None
+
+    if txn_type == "naqt":
+        m = re.match(r"^\s*([\d.,]+)\s+(\d{2}\.\d{2}\.\d{2,4})\s*$", text)
+        if not m:
+            return await message.answer("?? Format noto'g'ri. Misol: `50 22.04.2026`", parse_mode="Markdown")
+        cash = safe_float(m.group(1))
+        total = 0
+        sale_date = m.group(2)
+    elif txn_type == "qaytarish":
+        m = re.match(r"^\s*([\d.,]+)\s+(\d{2}\.\d{2}\.\d{2,4})\s*$", text)
+        if not m:
+            return await message.answer("?? Format noto'g'ri. Misol: `200 22.04.2026`", parse_mode="Markdown")
+        amount = safe_float(m.group(1))
+        total = -amount
+        cash = 0
+        sale_date = m.group(2)
+    else:
+        m = re.match(r"^\s*([\d.,]+)\s+([\d.,]+)\s+(\d{2}\.\d{2}\.\d{2,4})\s*$", text)
+        if not m:
+            return await message.answer("?? Format noto'g'ri. Misol: `3000 500 22.04.2026`", parse_mode="Markdown")
+        total = safe_float(m.group(1))
+        cash = safe_float(m.group(2))
+        sale_date = m.group(3)
+
     conn = get_db()
     cur = dict_cursor(conn)
     cur.execute(
@@ -2140,7 +2199,7 @@ async def boss_edit_sale_save(message: types.Message, state: FSMContext):
     conn.commit()
     conn.close()
     await state.clear()
-    await message.answer("✅ Boss tomonidan amal yangilandi.\n\n" + fmt_card(row["store_name"], total, cash, sale_date), reply_markup=get_boss_menu())
+    await message.answer("? Boss tomonidan amal yangilandi.\n\n" + fmt_card(row["store_name"], total, cash, sale_date), reply_markup=get_boss_menu())
 
 
 @dp.message(F.text == "🤖 AI Pro")
