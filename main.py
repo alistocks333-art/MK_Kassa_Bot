@@ -366,7 +366,8 @@ async def open_store_by_name(target, state: FSMContext, store: str, selected_wor
 
 async def notify_boss(worker_uid, store, total, cash, txn_type, date_str):
     try:
-        worker_name = get_worker_name(worker_uid)
+        worker_name = md_escape(get_worker_name(worker_uid))
+        safe_store = md_escape(store)
         time_str = date_str.split()[1] if " " in date_str else ""
         msg = ""
 
@@ -375,7 +376,7 @@ async def notify_boss(worker_uid, store, total, cash, txn_type, date_str):
             msg = (
                 f"🔔 **Yangi savdo!**\n"
                 f"👤 Ishchi: {worker_name}\n"
-                f"🏪 Do'kon: `{store}`\n"
+                f"🏪 Do'kon: `{safe_store}`\n"
                 f"💰 Savdo: {fmt(total)}\n"
                 f"💵 Naqt: {fmt(cash)}\n"
                 f"📉 Qarz: {fmt(debt)}\n"
@@ -385,14 +386,14 @@ async def notify_boss(worker_uid, store, total, cash, txn_type, date_str):
             msg = (
                 f"💵 **Naqt kiritildi!**\n"
                 f"👤 Ishchi: {worker_name}\n"
-                f"🏪 {store} | 💵 {fmt(cash)} | 🕒 {time_str}\n"
+                f"🏪 {safe_store} | 💵 {fmt(cash)} | 🕒 {time_str}\n"
                 f"📅 {date_str.split()[0] if ' ' in date_str else date_str}"
             )
         elif txn_type == "qaytarish":
             msg = (
                 f"🔄 **Qaytarildi!**\n"
                 f"👤 Ishchi: {worker_name}\n"
-                f"🏪 {store} | 🔄 {fmt(abs(total))} | 🕒 {time_str}\n"
+                f"🏪 {safe_store} | 🔄 {fmt(abs(total))} | 🕒 {time_str}\n"
                 f"📅 {date_str.split()[0] if ' ' in date_str else date_str}"
             )
 
@@ -664,8 +665,8 @@ async def boss_kassa_live(message: types.Message):
             if current_worker:
                 out += f"\n✅ **Jami: {fmt(worker_totals.get(current_worker, 0))}**\n\n"
             current_worker = r["worker_name"]
-            out += f"👤 **{current_worker}**:\n"
-        out += f"🏪 {r['store_name']} - {fmt(r['cash'])}\n"
+            out += f"👤 **{md_escape(current_worker)}**:\n"
+        out += f"🏪 {md_escape(r['store_name'])} - {fmt(r['cash'])}\n"
     if current_worker:
         out += f"\n✅ **Jami: {fmt(worker_totals.get(current_worker, 0))}**\n"
     out += f"\n{'=' * 30}\n💵 **UMUMIY JAMI: {fmt(grand_total)}**"
