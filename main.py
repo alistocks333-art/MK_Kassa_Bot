@@ -2123,7 +2123,9 @@ async def boss_edit_last_sale(callback: CallbackQuery, state: FSMContext):
             + f"?? Hozirgi sana: {sale_date}\n\n"
             + "Yangi format yuboring:\n"
             + "`naqt sana`\n"
-            + "Masalan: `50 22.04.2026`"
+            + "Masalan: `50 22.04.2026`\n"
+            + "yoki faqat sana:\n"
+            + "`22.04.2026`"
         )
     elif txn_type == "qaytarish":
         prompt = (
@@ -2132,7 +2134,9 @@ async def boss_edit_last_sale(callback: CallbackQuery, state: FSMContext):
             + f"?? Hozirgi sana: {sale_date}\n\n"
             + "Yangi format yuboring:\n"
             + "`summa sana`\n"
-            + "Masalan: `200 22.04.2026`"
+            + "Masalan: `200 22.04.2026`\n"
+            + "yoki faqat sana:\n"
+            + "`22.04.2026`"
         )
     else:
         prompt = (
@@ -2142,7 +2146,9 @@ async def boss_edit_last_sale(callback: CallbackQuery, state: FSMContext):
             + f"?? Hozirgi sana: {sale_date}\n\n"
             + "Yangi format yuboring:\n"
             + "`summa naqt sana`\n"
-            + "Masalan: `3000 500 22.04.2026`"
+            + "Masalan: `3000 500 22.04.2026`\n"
+            + "yoki faqat sana:\n"
+            + "`22.04.2026`"
         )
     await callback.message.answer(prompt, parse_mode="Markdown", reply_markup=get_back_kb())
 
@@ -2159,35 +2165,58 @@ async def boss_edit_sale_save(message: types.Message, state: FSMContext):
     sale_id = data.get("boss_edit_sale_id")
     txn_type = data.get("boss_edit_sale_txn")
     text = (message.text or "").strip()
+    current_total = data.get("boss_edit_sale_total", 0) or 0
+    current_cash = data.get("boss_edit_sale_cash", 0) or 0
     if not sale_id:
         return await message.answer("?? Amal topilmadi.")
 
     total = None
     cash = None
     sale_date = None
+    only_date = re.match(r"^\s*(\d{2}\.\d{2}\.\d{2,4})\s*$", text)
 
-    if txn_type == "naqt":
+    if only_date:
+        total = current_total
+        cash = current_cash
+        sale_date = only_date.group(1)
+    elif txn_type == "naqt":
         m = re.match(r"^\s*([\d.,]+)\s+(\d{2}\.\d{2}\.\d{2,4})\s*$", text)
         if not m:
-            return await message.answer("?? Format noto'g'ri. Misol: `50 22.04.2026`", parse_mode="Markdown")
+            return await message.answer("?? Format noto'g'ri. Misol: `50 22.04.2026` yoki faqat `22.04.2026`", parse_mode="Markdown")
         cash = safe_float(m.group(1))
         total = 0
         sale_date = m.group(2)
     elif txn_type == "qaytarish":
         m = re.match(r"^\s*([\d.,]+)\s+(\d{2}\.\d{2}\.\d{2,4})\s*$", text)
         if not m:
-            return await message.answer("?? Format noto'g'ri. Misol: `200 22.04.2026`", parse_mode="Markdown")
+            return await message.answer("?? Format noto'g'ri. Misol: `200 22.04.2026` yoki faqat `22.04.2026`", parse_mode="Markdown")
         amount = safe_float(m.group(1))
         total = -amount
         cash = 0
         sale_date = m.group(2)
     else:
-        m = re.match(r"^\s*([\d.,]+)\s+([\d.,]+)\s+(\d{2}\.\d{2}\.\d{2,4})\s*$", text)
-        if not m:
-            return await message.answer("?? Format noto'g'ri. Misol: `3000 500 22.04.2026`", parse_mode="Markdown")
-        total = safe_float(m.group(1))
-        cash = safe_float(m.group(2))
-        sale_date = m.group(3)
+        m_full = re.match(r"^\s*([\d.,]+)\s+([\d.,]+)\s+(\d{2}\.\d{2}\.\d{2,4})\s*$", text)
+        m_short = re.match(r"^\s*([\d.,]+)(?:\s+(?:naxt|naqt|nax|cash))?\s+(\d{2}\.\d{2}\.\d{2,4})\s*$", text, re.IGNORECASE)
+        if m_full:
+            total = safe_float(m_full.group(1))
+            cash = safe_float(m_full.group(2))
+            sale_date = m_full.group(3)
+        elif m_short:
+            amount = safe_float(m_short.group(1))
+            total = amount
+            cash = amount
+            sale_date = m_short.group(2)
+        else:
+            return await message.answer(
+                "?? Format noto'g'ri.\n"
+                "Savdo uchun:\n"
+                "`3000 500 22.04.2026`\n"
+                "yoki savdo va naqt bir xil bo'lsa:\n"
+                "`80 23.04.2026`\n"
+                "yoki faqat sana:\n"
+                "`22.04.2026`",
+                parse_mode="Markdown",
+            )
 
     conn = get_db()
     cur = dict_cursor(conn)
