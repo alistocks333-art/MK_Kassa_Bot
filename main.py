@@ -2873,13 +2873,23 @@ async def send_store_details(message: types.Message, store: str, state: FSMConte
         f"?? Qoldiq qarz: {fmt(total - cash)}\n\n"
         f"?? Harakatlar:\n"
     )
+    for h in hist:
+        if h["txn_type"] == "savdo":
+            out += f"?? {h['date']}\n?? Savdo: {fmt(h['total'])}\n?? Naqt: {fmt(h['cash'])}\n?? Qarz: {fmt((h['total'] or 0) - (h['cash'] or 0))}\n\n"
+        elif h["txn_type"] == "naqt":
+            out += f"?? {h['date']}\n?? Naqt kiritildi: {fmt(h['cash'])}\n\n"
+        elif h["txn_type"] == "qaytarish":
+            out += f"?? {h['date']}\n?? Qaytarish: {fmt(abs(h['total']))}\n\n"
+
+    back_button = (
+        InlineKeyboardButton(text="?? Qarzdorlar", callback_data=f"boss_debt_uid_{uid}")
         if message.from_user.id in BOSS_IDS
-        else InlineKeyboardButton(text="🔍 Boshqa", callback_data="stores_list")
+        else InlineKeyboardButton(text="?? Boshqa", callback_data="stores_list")
     )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="💵 Naqt", callback_data="act_cash"), InlineKeyboardButton(text="🔄 Qaytarish", callback_data="act_return")],
-            [InlineKeyboardButton(text="💰 Savdo", callback_data="act_trade"), InlineKeyboardButton(text="👤 Do'konchi", callback_data="act_owner")],
+            [InlineKeyboardButton(text="?? Naqt", callback_data="act_cash"), InlineKeyboardButton(text="?? Qaytarish", callback_data="act_return")],
+            [InlineKeyboardButton(text="?? Savdo", callback_data="act_trade"), InlineKeyboardButton(text="?? Do'konchi", callback_data="act_owner")],
             [back_button],
         ]
     )
