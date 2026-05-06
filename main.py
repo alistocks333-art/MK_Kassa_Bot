@@ -1806,17 +1806,17 @@ async def day_worker_summary(callback: CallbackQuery):
     )
 
 
-@dp.message(F.text == "💰 Oylik maosh")
-async def calculate_salary(message: types.Message):
-    uid = message.from_user.id
-    month = datetime.now().strftime("%m.%Y")
+async def render_salary_report(target, month: str):
+    is_callback = isinstance(target, CallbackQuery)
+    msg = target.message if is_callback else target
+    uid = target.from_user.id
 
     if uid in BOSS_IDS:
         conn = get_db()
         cur = dict_cursor(conn)
         cur.execute("SELECT user_id, name FROM users WHERE role = 'worker' AND active = 1 ORDER BY name")
         workers = cur.fetchall()
-        out = f"💰 Oylik maosh hisoboti ({month}):\n\n"
+        out = f"Oylik maosh hisoboti ({month}):\n\n"
         grand_total = 0
         for w in workers:
             cur.execute("SELECT cash, date FROM sales WHERE worker_id = %s AND cash > 0", (w["user_id"],))
@@ -1829,15 +1829,18 @@ async def calculate_salary(message: types.Message):
             salary = percent + fixa
             grand_total += salary
             out += (
-                f"👥 {w['name']}\n"
-                f"📊 Yig'ilgan naqt: {fmt(total_cash)}\n"
-                f"📈 8% ulush: {fmt(percent)}\n"
-                f"🎁 Fiksa bonus: {fmt(fixa)}\n"
-                f"✅ Jami maosh: {fmt(salary)}\n\n"
+                f"Ishchi: {w['name']}\n"
+                f"Yig'ilgan naqt: {fmt(total_cash)}\n"
+                f"8% ulush: {fmt(percent)}\n"
+                f"Fiksa bonus: {fmt(fixa)}\n"
+                f"Jami maosh: {fmt(salary)}\n\n"
             )
-        out += f"💰 JAMI MAOSH XARAJATI: {fmt(grand_total)}"
+        out += f"JAMI MAOSH XARAJATI: {fmt(grand_total)}"
         conn.close()
-        return await message.answer(out)
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Oylar", callback_data="salary_months_back")]])
+        if is_callback:
+            return await msg.edit_text(out, reply_markup=kb)
+        return await msg.answer(out, reply_markup=kb)
 
     conn = get_db()
     cur = dict_cursor(conn)
@@ -1850,14 +1853,67 @@ async def calculate_salary(message: types.Message):
 
     percent = total_cash * 0.08
     fixa = 150 if 1500 <= total_cash < 2000 else (200 if 2000 <= total_cash < 3000 else (300 if total_cash >= 3000 else 0))
-    await message.answer(
-        f"💰 Oylik maosh hisoboti ({month}):\n\n"
-        f"📊 Yig'ilgan naqt: {fmt(total_cash)}\n"
-        f"📈 8% ulush: {fmt(percent)}\n"
-        f"🎁 Fiksa bonus: {fmt(fixa)}\n"
-        f"✅ Jami maosh: {fmt(percent + fixa)}"
+    out = (
+        f"Oylik maosh hisoboti ({month}):\n\n"
+        f"Yig'ilgan naqt: {fmt(total_cash)}\n"
+        f"8% ulush: {fmt(percent)}\n"
+        f"Fiksa bonus: {fmt(fixa)}\n"
+        f"Jami maosh: {fmt(percent + fixa)}"
     )
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Oylar", callback_data="salary_months_back")]])
+    if is_callback:
+        return await msg.edit_text(out, reply_markup=kb)
+    return await msg.answer(out, reply_markup=kb)
 
+
+@dp.message(F.text == "Oylik maosh")
+async def calculate_salary(message: types.Message):
+    uid = message.from_user.id
+    conn = get_db()
+    cur = dict_cursor(conn)
+    if uid in BOSS_IDS:
+        cur.execute("SELECT date FROM sales ORDER BY date DESC")
+    else:
+        cur.execute("SELECT date FROM sales WHERE worker_id = %s ORDER BY date DESC", (uid,))
+    months = collect_available_months(cur.fetchall())
+    conn.close()
+
+    if not months:
+        return await message.answer("Hozircha oylik maosh uchun ma'lumot yo'q.")
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=m, callback_data=f"salary_month_{m}")] for m in months]
+    )
+    kb.inline_keyboard.append([InlineKeyboardButton(text="Orqaga", callback_data="back_main")])
+    await message.answer("Maosh uchun oyni tanlang:", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("salary_month_"))
+async def salary_month_pick(callback: CallbackQuery):
+    await callback.answer()
+    month = callback.data.replace("salary_month_", "")
+    await render_salary_report(callback, month)
+
+
+@dp.callback_query(F.data == "salary_months_back")
+async def salary_months_back(callback: CallbackQuery):
+    await callback.answer()
+    uid = callback.from_user.id
+    conn = get_db()
+    cur = dict_cursor(conn)
+    if uid in BOSS_IDS:
+        cur.execute("SELECT date FROM sales ORDER BY date DESC")
+    else:
+        cur.execute("SELECT date FROM sales WHERE worker_id = %s ORDER BY date DESC", (uid,))
+    months = collect_available_months(cur.fetchall())
+    conn.close()
+    if not months:
+        return await callback.message.edit_text("Hozircha oylik maosh uchun ma'lumot yo'q.")
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=m, callback_data=f"salary_month_{m}")] for m in months]
+    )
+    kb.inline_keyboard.append([InlineKeyboardButton(text="Orqaga", callback_data="back_main")])
+    await callback.message.edit_text("Maosh uchun oyni tanlang:", reply_markup=kb)
 
 # ================= ISHCHI =================
 @dp.message(F.text == "📊 Kunlik kassa")
@@ -2809,23 +2865,14 @@ async def send_store_details(message: types.Message, store: str, state: FSMConte
 
     total = res["total"]
     cash = res["cash"]
+    safe_store = md_escape(store.upper())
     out = (
-        f"🏪 **{store.upper()}** hisoboti:\n"
-        f"💰 Umumiy savdo: {fmt(total)}\n"
-        f"💵 Yig'ilgan: {fmt(cash)}\n"
-        f"📉 Qoldiq qarz: {fmt(total - cash)}\n\n"
-        f"📜 Harakatlar:\n"
+        f"?? **{safe_store}** hisoboti:\n"
+        f"?? Umumiy savdo: {fmt(total)}\n"
+        f"?? Yig'ilgan: {fmt(cash)}\n"
+        f"?? Qoldiq qarz: {fmt(total - cash)}\n\n"
+        f"?? Harakatlar:\n"
     )
-    for h in hist:
-        if h["txn_type"] == "savdo":
-            out += f"📅 {h['date']}\n💰 Savdo: {fmt(h['total'])}\n💵 Naqt: {fmt(h['cash'])}\n📉 Qarz: {fmt((h['total'] or 0) - (h['cash'] or 0))}\n\n"
-        elif h["txn_type"] == "naqt":
-            out += f"📅 {h['date']}\n💵 Naqt kiritildi: {fmt(h['cash'])}\n\n"
-        elif h["txn_type"] == "qaytarish":
-            out += f"📅 {h['date']}\n🔄 Qaytarish: {fmt(abs(h['total']))}\n\n"
-
-    back_button = (
-        InlineKeyboardButton(text="⬅️ Qarzdorlar", callback_data=f"boss_debt_uid_{uid}")
         if message.from_user.id in BOSS_IDS
         else InlineKeyboardButton(text="🔍 Boshqa", callback_data="stores_list")
     )
