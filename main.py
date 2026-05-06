@@ -1866,6 +1866,7 @@ async def render_salary_report(target, month: str):
     return await msg.answer(out, reply_markup=kb)
 
 
+@dp.message(F.text == "рџ’° Oylik maosh")
 @dp.message(F.text == "Oylik maosh")
 async def calculate_salary(message: types.Message):
     uid = message.from_user.id
