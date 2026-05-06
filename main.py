@@ -1816,7 +1816,7 @@ async def render_salary_report(target, month: str):
         cur = dict_cursor(conn)
         cur.execute("SELECT user_id, name FROM users WHERE role = 'worker' AND active = 1 ORDER BY name")
         workers = cur.fetchall()
-        out = f"Oylik maosh hisoboti ({month}):\n\n"
+        out = f"💰 Oylik maosh hisoboti ({month}):\n\n"
         grand_total = 0
         for w in workers:
             cur.execute("SELECT cash, date FROM sales WHERE worker_id = %s AND cash > 0", (w["user_id"],))
@@ -1829,13 +1829,13 @@ async def render_salary_report(target, month: str):
             salary = percent + fixa
             grand_total += salary
             out += (
-                f"Ishchi: {w['name']}\n"
-                f"Yig'ilgan naqt: {fmt(total_cash)}\n"
-                f"8% ulush: {fmt(percent)}\n"
-                f"Fiksa bonus: {fmt(fixa)}\n"
-                f"Jami maosh: {fmt(salary)}\n\n"
+                f"👥 {w['name']}\n"
+                f"📊 Yig'ilgan naqt: {fmt(total_cash)}\n"
+                f"📈 8% ulush: {fmt(percent)}\n"
+                f"🎁 Fiksa bonus: {fmt(fixa)}\n"
+                f"✅ Jami maosh: {fmt(salary)}\n\n"
             )
-        out += f"JAMI MAOSH XARAJATI: {fmt(grand_total)}"
+        out += f"💰 JAMI MAOSH XARAJATI: {fmt(grand_total)}"
         conn.close()
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Oylar", callback_data="salary_months_back")]])
         if is_callback:
@@ -1854,11 +1854,11 @@ async def render_salary_report(target, month: str):
     percent = total_cash * 0.08
     fixa = 150 if 1500 <= total_cash < 2000 else (200 if 2000 <= total_cash < 3000 else (300 if total_cash >= 3000 else 0))
     out = (
-        f"Oylik maosh hisoboti ({month}):\n\n"
-        f"Yig'ilgan naqt: {fmt(total_cash)}\n"
-        f"8% ulush: {fmt(percent)}\n"
-        f"Fiksa bonus: {fmt(fixa)}\n"
-        f"Jami maosh: {fmt(percent + fixa)}"
+        f"💰 Oylik maosh hisoboti ({month}):\n\n"
+        f"📊 Yig'ilgan naqt: {fmt(total_cash)}\n"
+        f"📈 8% ulush: {fmt(percent)}\n"
+        f"🎁 Fiksa bonus: {fmt(fixa)}\n"
+        f"✅ Jami maosh: {fmt(percent + fixa)}"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Oylar", callback_data="salary_months_back")]])
     if is_callback:
