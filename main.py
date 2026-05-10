@@ -303,6 +303,17 @@ async def open_store_by_name(target, state: FSMContext, store: str, selected_wor
             return await target.answer("⚠️ Do'kon topilmadi.", show_alert=True)
         return await msg.answer("⚠️ Do'kon topilmadi.")
 
+    if user_id in BOSS_IDS and not selected_worker_id:
+        conn = get_db()
+        cur = dict_cursor(conn)
+        cur.execute(
+            "SELECT worker_id FROM sales WHERE normalized_store = %s AND worker_id IS NOT NULL ORDER BY id DESC LIMIT 1",
+            (store,),
+        )
+        row = cur.fetchone()
+        conn.close()
+        selected_worker_id = row["worker_id"] if row else None
+
     await state.update_data(current_store=store)
     if selected_worker_id:
         await state.update_data(debt_worker_id=selected_worker_id)
@@ -2661,9 +2672,20 @@ async def store_details(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     selected_worker_id = data.get("debt_worker_id", callback.from_user.id)
     from_boss_debt = data.get("debt_worker_id")
+    if callback.from_user.id in BOSS_IDS and not selected_worker_id:
+        conn = get_db()
+        cur = dict_cursor(conn)
+        cur.execute(
+            "SELECT worker_id FROM sales WHERE normalized_store = %s AND worker_id IS NOT NULL ORDER BY id DESC LIMIT 1",
+            (store,),
+        )
+        row = cur.fetchone()
+        conn.close()
+        selected_worker_id = row["worker_id"] if row else None
+        from_boss_debt = selected_worker_id
 
     await state.update_data(current_store=store)
-    if callback.from_user.id in BOSS_IDS:
+    if callback.from_user.id in BOSS_IDS and selected_worker_id:
         await state.update_data(debt_worker_id=selected_worker_id)
 
     w_cond, w_params = get_worker_filter(selected_worker_id)
