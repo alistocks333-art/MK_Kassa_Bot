@@ -2656,14 +2656,15 @@ async def search_handle(message: types.Message, state: FSMContext):
 async def store_details(callback: CallbackQuery, state: FSMContext):
     store = callback.data[6:]
     if not store:
-        return await callback.answer("⚠️ Xato", show_alert=True)
+        return await callback.answer("?? Xato", show_alert=True)
 
-    await state.update_data(current_store=store)
     data = await state.get_data()
     selected_worker_id = data.get("debt_worker_id", callback.from_user.id)
     from_boss_debt = data.get("debt_worker_id")
-    if from_boss_debt:
-        await state.update_data(debt_worker_id=None)
+
+    await state.update_data(current_store=store)
+    if callback.from_user.id in BOSS_IDS:
+        await state.update_data(debt_worker_id=selected_worker_id)
 
     w_cond, w_params = get_worker_filter(selected_worker_id)
     full_params = (store,) + w_params
@@ -2677,35 +2678,35 @@ async def store_details(callback: CallbackQuery, state: FSMContext):
 
     total = res["total"]
     cash = res["cash"]
+    safe_store = md_escape(store.upper())
     out = (
-        f"🏪 **{store.upper()}** hisoboti:\n"
-        f"💰 Umumiy savdo: {fmt(total)}\n"
-        f"💵 Yig'ilgan: {fmt(cash)}\n"
-        f"📉 Qoldiq qarz: {fmt(total - cash)}\n\n"
-        f"📜 Harakatlar:\n"
+        f"?? **{safe_store}** hisoboti:\n"
+        f"?? Umumiy savdo: {fmt(total)}\n"
+        f"?? Yig'ilgan: {fmt(cash)}\n"
+        f"?? Qoldiq qarz: {fmt(total - cash)}\n\n"
+        f"?? Harakatlar:\n"
     )
     for h in hist:
         if h["txn_type"] == "savdo":
-            out += f"📅 {h['date']}\n💰 Savdo: {fmt(h['total'])}\n💵 Naqt: {fmt(h['cash'])}\n📉 Qarz: {fmt((h['total'] or 0) - (h['cash'] or 0))}\n\n"
+            out += f"?? {h['date']}\n?? Savdo: {fmt(h['total'])}\n?? Naqt: {fmt(h['cash'])}\n?? Qarz: {fmt((h['total'] or 0) - (h['cash'] or 0))}\n\n"
         elif h["txn_type"] == "naqt":
-            out += f"📅 {h['date']}\n💵 Naqt kiritildi: {fmt(h['cash'])}\n\n"
+            out += f"?? {h['date']}\n?? Naqt kiritildi: {fmt(h['cash'])}\n\n"
         elif h["txn_type"] == "qaytarish":
-            out += f"📅 {h['date']}\n🔄 Qaytarish: {fmt(abs(h['total']))}\n\n"
+            out += f"?? {h['date']}\n?? Qaytarish: {fmt(abs(h['total']))}\n\n"
 
     if from_boss_debt:
-        back_row = [InlineKeyboardButton(text="⬅️ Qarzdorlar", callback_data=f"boss_debt_uid_{selected_worker_id}")]
+        back_row = [InlineKeyboardButton(text="?? Qarzdorlar", callback_data=f"boss_debt_uid_{selected_worker_id}")]
     else:
-        back_row = [InlineKeyboardButton(text="⬅️", callback_data="back_main" if callback.from_user.id in BOSS_IDS else "stores_list")]
+        back_row = [InlineKeyboardButton(text="??", callback_data="back_main" if callback.from_user.id in BOSS_IDS else "stores_list")]
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="💵 Naqt", callback_data="act_cash"), InlineKeyboardButton(text="🔄 Qaytarish", callback_data="act_return")],
-            [InlineKeyboardButton(text="💰 Savdo", callback_data="act_trade"), InlineKeyboardButton(text="👤 Do'konchi", callback_data="act_owner")],
+            [InlineKeyboardButton(text="?? Naqt", callback_data="act_cash"), InlineKeyboardButton(text="?? Qaytarish", callback_data="act_return")],
+            [InlineKeyboardButton(text="?? Savdo", callback_data="act_trade"), InlineKeyboardButton(text="?? Do'konchi", callback_data="act_owner")],
             back_row,
         ]
     )
     await callback.message.edit_text(out, reply_markup=kb, parse_mode="Markdown")
-
 
 @dp.callback_query(F.data == "act_cash")
 async def start_cash(callback: CallbackQuery, state: FSMContext):
