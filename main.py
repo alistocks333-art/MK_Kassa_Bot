@@ -57,7 +57,6 @@ WORKER_MENU_BUTTONS = {
     "🧾 Do'konlarim",
     "📚 Oylik arxiv",
     "📈 Statistika",
-    "💰 Oylik maosh",
     "🕘 Oxirgi amal",
     "🤖 AI Yordam",
 }
@@ -438,8 +437,8 @@ def get_worker_menu():
             [KeyboardButton(text="📝 Savdo kiritish"), KeyboardButton(text="💵 Bugungi kassa")],
             [KeyboardButton(text="🔍 Do'kon qidirish"), KeyboardButton(text="🤝 Qarzi borlar")],
             [KeyboardButton(text="🧾 Do'konlarim"), KeyboardButton(text="📚 Oylik arxiv")],
-            [KeyboardButton(text="📈 Statistika"), KeyboardButton(text="💰 Oylik maosh")],
-            [KeyboardButton(text="🕘 Oxirgi amal"), KeyboardButton(text="🤖 AI Yordam")],
+            [KeyboardButton(text="📈 Statistika"), KeyboardButton(text="🕘 Oxirgi amal")],
+            [KeyboardButton(text="🤖 AI Yordam")],
         ],
         resize_keyboard=True,
     )
@@ -571,7 +570,7 @@ async def route_menu_button(message: types.Message, state: FSMContext):
         return await monthly_report(message)
     if text == "📈 Statistika":
         return await pro_my_stats(message)
-    if text == "💰 Oylik maosh":
+    if text.endswith("Oylik maosh") and message.from_user.id in BOSS_IDS:
         return await calculate_salary(message)
     if text == "🕘 Oxirgi amal":
         return await pro_last_action(message, state)
