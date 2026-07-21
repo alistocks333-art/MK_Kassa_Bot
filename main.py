@@ -66,6 +66,7 @@ BOSS_MENU_BUTTONS = {
     "📅 Sana filter",
     "🤝 Qarzdorlar Pro",
     "👥 Ishchi statistikasi",
+    "📜 Harakatlar",
     "🏪 Do'kon reytingi",
     "🏪 Barcha do'konlar",
     "🔔 Eslatma",
@@ -449,8 +450,9 @@ def get_boss_menu():
         keyboard=[
             [KeyboardButton(text="📊 Boss Panel"), KeyboardButton(text="💰 Kassa (Live)")],
             [KeyboardButton(text="📅 Sana filter"), KeyboardButton(text="🤝 Qarzdorlar Pro")],
-            [KeyboardButton(text="👥 Ishchi statistikasi"), KeyboardButton(text="🏪 Do'kon reytingi")],
-            [KeyboardButton(text="🏪 Barcha do'konlar"), KeyboardButton(text="🔔 Eslatma")],
+            [KeyboardButton(text="👥 Ishchi statistikasi"), KeyboardButton(text="📜 Harakatlar")],
+            [KeyboardButton(text="🏪 Do'kon reytingi"), KeyboardButton(text="🏪 Barcha do'konlar")],
+            [KeyboardButton(text="🔔 Eslatma")],
             [KeyboardButton(text="📅 Oylik arxiv"), KeyboardButton(text="📅 Oylik kassa")],
             [KeyboardButton(text="💰 Oylik maosh"), KeyboardButton(text="👥 Ishchilar")],
             [KeyboardButton(text="🤖 AI Yordam"), KeyboardButton(text="🤖 AI Pro")],
@@ -584,6 +586,8 @@ async def route_menu_button(message: types.Message, state: FSMContext):
         return await pro_range_prompt(message, state)
     if text == "👥 Ishchi statistikasi":
         return await pro_worker_stats(message)
+    if text == "📜 Harakatlar" and message.from_user.id in BOSS_IDS:
+        return await boss_actions_workers_menu(message)
     if text == "🏪 Do'kon reytingi":
         return await pro_store_ranking(message)
     if text == "🔔 Eslatma":
@@ -2038,6 +2042,126 @@ async def pro_worker_stats(message: types.Message):
             f"📊 O'rtacha tushum: {fmt(s['avg'])}\n\n"
         )
     await message.answer(out)
+
+
+async def render_boss_actions_workers(target):
+    is_callback = isinstance(target, CallbackQuery)
+    msg = target.message if is_callback else target
+    conn = get_db()
+    cur = dict_cursor(conn)
+    cur.execute("SELECT name, user_id FROM users WHERE role = 'worker' AND active = 1 ORDER BY name")
+    workers = cur.fetchall()
+    conn.close()
+    if not workers:
+        if is_callback:
+            return await msg.edit_text("📜 Hozircha ishchilar yo'q.")
+        return await msg.answer("📜 Hozircha ishchilar yo'q.")
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=f"👤 {w['name']}", callback_data=f"act_worker_{w['user_id']}")] for w in workers]
+    )
+    kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="back_main")])
+    text = "📜 Harakatlar\n\nIshchini tanlang:"
+    if is_callback:
+        return await msg.edit_text(text, reply_markup=kb)
+    return await msg.answer(text, reply_markup=kb)
+
+
+@dp.message(F.text == "📜 Harakatlar")
+async def boss_actions_workers_menu(message: types.Message):
+    if message.from_user.id not in BOSS_IDS:
+        return
+    await render_boss_actions_workers(message)
+
+
+@dp.callback_query(F.data == "actions_workers_back")
+async def actions_workers_back(callback: CallbackQuery):
+    await callback.answer()
+    if callback.from_user.id not in BOSS_IDS:
+        return
+    await render_boss_actions_workers(callback)
+
+
+@dp.callback_query(F.data.startswith("act_worker_"))
+async def actions_worker_months(callback: CallbackQuery):
+    await callback.answer()
+    if callback.from_user.id not in BOSS_IDS:
+        return
+    worker_id = int(callback.data.replace("act_worker_", ""))
+    conn = get_db()
+    cur = dict_cursor(conn)
+    cur.execute("SELECT name FROM users WHERE user_id = %s", (worker_id,))
+    worker = cur.fetchone()
+    cur.execute("SELECT date FROM sales WHERE worker_id = %s ORDER BY date DESC", (worker_id,))
+    months = collect_available_months(cur.fetchall())
+    conn.close()
+    if not worker:
+        return await callback.message.edit_text("⚠️ Ishchi topilmadi.")
+    if not months:
+        return await callback.message.edit_text(
+            f"📜 {worker['name']} uchun hali harakat yo'q.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Ishchilar", callback_data="actions_workers_back")]]),
+        )
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=f"📅 {m}", callback_data=f"act_month_{worker_id}_{m}")] for m in months]
+    )
+    kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Ishchilar", callback_data="actions_workers_back")])
+    await callback.message.edit_text(f"👤 {worker['name']}\n\nOyni tanlang:", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("act_month_"))
+async def actions_worker_history(callback: CallbackQuery):
+    await callback.answer()
+    if callback.from_user.id not in BOSS_IDS:
+        return
+    payload = callback.data.replace("act_month_", "")
+    worker_id_text, month = payload.split("_", 1)
+    worker_id = int(worker_id_text)
+
+    conn = get_db()
+    cur = dict_cursor(conn)
+    cur.execute("SELECT name FROM users WHERE user_id = %s", (worker_id,))
+    worker = cur.fetchone()
+    cur.execute(
+        """
+        SELECT store_name, txn_type, total, cash, date
+        FROM sales
+        WHERE worker_id = %s
+        ORDER BY id DESC
+        """,
+        (worker_id,),
+    )
+    rows = [r for r in cur.fetchall() if month in extract_month_keys(r["date"])]
+    conn.close()
+
+    if not worker:
+        return await callback.message.edit_text("⚠️ Ishchi topilmadi.")
+    if not rows:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Oylar", callback_data=f"act_worker_{worker_id}")]])
+        return await callback.message.edit_text(f"👤 {worker['name']}\n📅 {month}\n\nHarakat topilmadi.", reply_markup=kb)
+
+    out = f"📜 {worker['name']} | {month}\n\n"
+    for i, row in enumerate(rows, 1):
+        out += f"{i}. 📅 {row['date']}\n🏪 Do'kon: {row['store_name']}\n"
+        if row["txn_type"] == "savdo":
+            out += (
+                f"💰 Savdo: {fmt(row['total'])}\n"
+                f"💵 Naqt: {fmt(row['cash'])}\n"
+                f"📉 Qarz: {fmt((row['total'] or 0) - (row['cash'] or 0))}\n\n"
+            )
+        elif row["txn_type"] == "naqt":
+            out += f"💵 Naqt kiritildi: {fmt(row['cash'])}\n\n"
+        elif row["txn_type"] == "qaytarish":
+            out += f"🔄 Qaytarish: {fmt(abs(row['total'] or 0))}\n\n"
+        else:
+            out += f"📝 Amal: {row['txn_type']}\n\n"
+
+    if len(out) > 3800:
+        out = out[:3800] + "\n..."
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Oylar", callback_data=f"act_worker_{worker_id}")]])
+    await callback.message.edit_text(out, reply_markup=kb)
 
 
 @dp.message(F.text == "🏪 Do'kon reytingi")
