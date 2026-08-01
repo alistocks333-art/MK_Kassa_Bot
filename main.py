@@ -303,8 +303,8 @@ async def open_store_by_name(target, state: FSMContext, store: str, selected_wor
 
     if not store:
         if isinstance(target, CallbackQuery):
-            return await target.answer("?? Do'kon topilmadi.", show_alert=True)
-        return await msg.answer("?? Do'kon topilmadi.")
+            return await target.answer("⚠️ Do'kon topilmadi.", show_alert=True)
+        return await msg.answer("⚠️ Do'kon topilmadi.")
 
     if user_id in BOSS_IDS and not selected_worker_id:
         conn = get_db()
@@ -350,31 +350,31 @@ async def open_store_by_name(target, state: FSMContext, store: str, selected_wor
     cash = res["cash"]
     safe_store = md_escape(store.upper())
     out = (
-        f"?? **{safe_store}** hisoboti:\n"
-        f"?? Umumiy savdo: {fmt(total)}\n"
-        f"?? Yig'ilgan: {fmt(cash)}\n"
-        f"?? Qoldiq qarz: {fmt(total - cash)}\n\n"
-        f"?? Harakatlar:\n"
+        f"🏪 **{safe_store}** hisoboti:\n"
+        f"💰 Umumiy savdo: {fmt(total)}\n"
+        f"💵 Yig'ilgan: {fmt(cash)}\n"
+        f"📉 Qoldiq qarz: {fmt(total - cash)}\n\n"
+        f"📜 Harakatlar:\n"
     )
     for h in hist:
         if h["txn_type"] == "savdo":
-            out += f"?? {h['date']}\n?? Savdo: {fmt(h['total'])}\n?? Naqt: {fmt(h['cash'])}\n?? Qarz: {fmt((h['total'] or 0) - (h['cash'] or 0))}\n\n"
+            out += f"📅 {h['date']}\n💰 Savdo: {fmt(h['total'])}\n💵 Naqt: {fmt(h['cash'])}\n📉 Qarz: {fmt((h['total'] or 0) - (h['cash'] or 0))}\n\n"
         elif h["txn_type"] == "naqt":
-            out += f"?? {h['date']}\n?? Naqt kiritildi: {fmt(h['cash'])}\n\n"
+            out += f"📅 {h['date']}\n💵 Naqt kiritildi: {fmt(h['cash'])}\n\n"
         elif h["txn_type"] == "qaytarish":
-            out += f"?? {h['date']}\n?? Qaytarish: {fmt(abs(h['total']))}\n\n"
+            out += f"📅 {h['date']}\n🔄 Qaytarish: {fmt(abs(h['total']))}\n\n"
 
     stored_back = (await state.get_data()).get("store_back_callback")
     if stored_back:
-        back_row = [InlineKeyboardButton(text="?? Orqaga", callback_data=stored_back)]
+        back_row = [InlineKeyboardButton(text="⬅️ Orqaga", callback_data=stored_back)]
     elif selected_worker_id and user_id in BOSS_IDS:
-        back_row = [InlineKeyboardButton(text="?? Qarzdorlar", callback_data=f"boss_debt_uid_{selected_worker_id}")]
+        back_row = [InlineKeyboardButton(text="⬅️ Qarzdorlar", callback_data=f"boss_debt_uid_{selected_worker_id}")]
     else:
-        back_row = [InlineKeyboardButton(text="??", callback_data="back_main" if user_id in BOSS_IDS else "stores_list")]
+        back_row = [InlineKeyboardButton(text="⬅️", callback_data="back_main" if user_id in BOSS_IDS else "stores_list")]
 
     action_rows = [
-        [InlineKeyboardButton(text="?? Naqt", callback_data="act_cash"), InlineKeyboardButton(text="?? Qaytarish", callback_data="act_return")],
-        [InlineKeyboardButton(text="?? Savdo", callback_data="act_trade"), InlineKeyboardButton(text="?? Do'konchi", callback_data="act_owner")],
+        [InlineKeyboardButton(text="💵 Naqt", callback_data="act_cash"), InlineKeyboardButton(text="🔄 Qaytarish", callback_data="act_return")],
+        [InlineKeyboardButton(text="💰 Savdo", callback_data="act_trade"), InlineKeyboardButton(text="👤 Do'konchi", callback_data="act_owner")],
     ]
     if user_id in BOSS_IDS and hist:
         await state.update_data(boss_edit_sale_id=hist[0]["id"])
@@ -382,13 +382,13 @@ async def open_store_by_name(target, state: FSMContext, store: str, selected_wor
         await state.update_data(boss_edit_sale_total=hist[0]["total"] or 0)
         await state.update_data(boss_edit_sale_cash=hist[0]["cash"] or 0)
         await state.update_data(boss_edit_sale_date=date_head(hist[0]["date"]))
-        action_rows.append([InlineKeyboardButton(text="?? Oxirgi amalni edit", callback_data="boss_edit_last_sale")])
+        action_rows.append([InlineKeyboardButton(text="✏️ Oxirgi amalni edit", callback_data="boss_edit_last_sale")])
 
     nav_row = []
     if page > 0:
-        nav_row.append(InlineKeyboardButton(text="?? Oldingi", callback_data=f"store_hist_{page - 1}"))
+        nav_row.append(InlineKeyboardButton(text="⬅️ Oldingi", callback_data=f"store_hist_{page - 1}"))
     if (page + 1) * STORE_HISTORY_PAGE_SIZE < total_rows:
-        nav_row.append(InlineKeyboardButton(text="Keyingi ??", callback_data=f"store_hist_{page + 1}"))
+        nav_row.append(InlineKeyboardButton(text="Keyingi ➡️", callback_data=f"store_hist_{page + 1}"))
     if nav_row:
         action_rows.append(nav_row)
 
@@ -409,7 +409,7 @@ async def store_history_page(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     store = data.get("current_store")
     if not store:
-        return await callback.answer("?? Do'kon topilmadi.", show_alert=True)
+        return await callback.answer("⚠️ Do'kon topilmadi.", show_alert=True)
     selected_worker_id = data.get("debt_worker_id")
     back_callback = data.get("store_back_callback")
     page = int(callback.data.replace("store_hist_", ""))
@@ -2344,9 +2344,9 @@ async def boss_edit_last_sale(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AppStates.boss_edit_sale_waiting)
     if txn_type == "naqt":
         prompt = (
-            "?? Oxirgi amal: Naqt\n\n"
-            + f"?? Hozirgi naqt: {fmt(cash)}\n"
-            + f"?? Hozirgi sana: {sale_date}\n\n"
+            "✏️ Oxirgi amal: Naqt\n\n"
+            + f"💵 Hozirgi naqt: {fmt(cash)}\n"
+            + f"📅 Hozirgi sana: {sale_date}\n\n"
             + "Yangi format yuboring:\n"
             + "`naqt sana`\n"
             + "Masalan: `50 22.04.2026`\n"
@@ -2355,9 +2355,9 @@ async def boss_edit_last_sale(callback: CallbackQuery, state: FSMContext):
         )
     elif txn_type == "qaytarish":
         prompt = (
-            "?? Oxirgi amal: Qaytarish\n\n"
-            + f"?? Hozirgi summa: {fmt(abs(total))}\n"
-            + f"?? Hozirgi sana: {sale_date}\n\n"
+            "✏️ Oxirgi amal: Qaytarish\n\n"
+            + f"🔄 Hozirgi summa: {fmt(abs(total))}\n"
+            + f"📅 Hozirgi sana: {sale_date}\n\n"
             + "Yangi format yuboring:\n"
             + "`summa sana`\n"
             + "Masalan: `200 22.04.2026`\n"
@@ -2366,10 +2366,10 @@ async def boss_edit_last_sale(callback: CallbackQuery, state: FSMContext):
         )
     else:
         prompt = (
-            "?? Oxirgi amal: Savdo\n\n"
-            + f"?? Hozirgi savdo: {fmt(total)}\n"
-            + f"?? Hozirgi naqt: {fmt(cash)}\n"
-            + f"?? Hozirgi sana: {sale_date}\n\n"
+            "✏️ Oxirgi amal: Savdo\n\n"
+            + f"💰 Hozirgi savdo: {fmt(total)}\n"
+            + f"💵 Hozirgi naqt: {fmt(cash)}\n"
+            + f"📅 Hozirgi sana: {sale_date}\n\n"
             + "Yangi format yuboring:\n"
             + "`summa naqt sana`\n"
             + "Masalan: `3000 500 22.04.2026`\n"
@@ -2394,7 +2394,7 @@ async def boss_edit_sale_save(message: types.Message, state: FSMContext):
     current_total = data.get("boss_edit_sale_total", 0) or 0
     current_cash = data.get("boss_edit_sale_cash", 0) or 0
     if not sale_id:
-        return await message.answer("?? Amal topilmadi.")
+        return await message.answer("⚠️ Amal topilmadi.")
 
     total = None
     cash = None
@@ -2408,14 +2408,14 @@ async def boss_edit_sale_save(message: types.Message, state: FSMContext):
     elif txn_type == "naqt":
         m = re.match(r"^\s*([\d.,]+)\s+(\d{2}\.\d{2}\.\d{2,4})\s*$", text)
         if not m:
-            return await message.answer("?? Format noto'g'ri. Misol: `50 22.04.2026` yoki faqat `22.04.2026`", parse_mode="Markdown")
+            return await message.answer("⚠️ Format noto'g'ri. Misol: `50 22.04.2026` yoki faqat `22.04.2026`", parse_mode="Markdown")
         cash = safe_float(m.group(1))
         total = 0
         sale_date = m.group(2)
     elif txn_type == "qaytarish":
         m = re.match(r"^\s*([\d.,]+)\s+(\d{2}\.\d{2}\.\d{2,4})\s*$", text)
         if not m:
-            return await message.answer("?? Format noto'g'ri. Misol: `200 22.04.2026` yoki faqat `22.04.2026`", parse_mode="Markdown")
+            return await message.answer("⚠️ Format noto'g'ri. Misol: `200 22.04.2026` yoki faqat `22.04.2026`", parse_mode="Markdown")
         amount = safe_float(m.group(1))
         total = -amount
         cash = 0
@@ -2434,7 +2434,7 @@ async def boss_edit_sale_save(message: types.Message, state: FSMContext):
             sale_date = m_short.group(2)
         else:
             return await message.answer(
-                "?? Format noto'g'ri.\n"
+                "⚠️ Format noto'g'ri.\n"
                 "Savdo uchun:\n"
                 "`3000 500 22.04.2026`\n"
                 "yoki savdo va naqt bir xil bo'lsa:\n"
@@ -2824,7 +2824,7 @@ async def search_handle(message: types.Message, state: FSMContext):
 async def store_details(callback: CallbackQuery, state: FSMContext):
     store = callback.data[6:]
     if not store:
-        return await callback.answer("?? Xato", show_alert=True)
+        return await callback.answer("⚠️ Xato", show_alert=True)
 
     data = await state.get_data()
     selected_worker_id = data.get("debt_worker_id", callback.from_user.id)
@@ -2844,48 +2844,8 @@ async def store_details(callback: CallbackQuery, state: FSMContext):
     await state.update_data(current_store=store)
     if callback.from_user.id in BOSS_IDS and selected_worker_id:
         await state.update_data(debt_worker_id=selected_worker_id)
-
-    w_cond, w_params = get_worker_filter(selected_worker_id)
-    full_params = (store,) + w_params
-    conn = get_db()
-    cur = dict_cursor(conn)
-    cur.execute("SELECT COALESCE(SUM(total),0) AS total, COALESCE(SUM(cash),0) AS cash FROM sales WHERE normalized_store = %s " + w_cond, full_params)
-    res = cur.fetchone()
-    cur.execute("SELECT txn_type, total, cash, date FROM sales WHERE normalized_store = %s " + w_cond + " ORDER BY id DESC LIMIT 10", full_params)
-    hist = cur.fetchall()
-    conn.close()
-
-    total = res["total"]
-    cash = res["cash"]
-    safe_store = md_escape(store.upper())
-    out = (
-        f"?? **{safe_store}** hisoboti:\n"
-        f"?? Umumiy savdo: {fmt(total)}\n"
-        f"?? Yig'ilgan: {fmt(cash)}\n"
-        f"?? Qoldiq qarz: {fmt(total - cash)}\n\n"
-        f"?? Harakatlar:\n"
-    )
-    for h in hist:
-        if h["txn_type"] == "savdo":
-            out += f"?? {h['date']}\n?? Savdo: {fmt(h['total'])}\n?? Naqt: {fmt(h['cash'])}\n?? Qarz: {fmt((h['total'] or 0) - (h['cash'] or 0))}\n\n"
-        elif h["txn_type"] == "naqt":
-            out += f"?? {h['date']}\n?? Naqt kiritildi: {fmt(h['cash'])}\n\n"
-        elif h["txn_type"] == "qaytarish":
-            out += f"?? {h['date']}\n?? Qaytarish: {fmt(abs(h['total']))}\n\n"
-
-    if from_boss_debt:
-        back_row = [InlineKeyboardButton(text="?? Qarzdorlar", callback_data=f"boss_debt_uid_{selected_worker_id}")]
-    else:
-        back_row = [InlineKeyboardButton(text="??", callback_data="back_main" if callback.from_user.id in BOSS_IDS else "stores_list")]
-
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="?? Naqt", callback_data="act_cash"), InlineKeyboardButton(text="?? Qaytarish", callback_data="act_return")],
-            [InlineKeyboardButton(text="?? Savdo", callback_data="act_trade"), InlineKeyboardButton(text="?? Do'konchi", callback_data="act_owner")],
-            back_row,
-        ]
-    )
-    await callback.message.edit_text(out, reply_markup=kb, parse_mode="Markdown")
+    back_callback = f"boss_debt_uid_{selected_worker_id}" if from_boss_debt else ("back_main" if callback.from_user.id in BOSS_IDS else "stores_list")
+    await open_store_by_name(callback, state, store, selected_worker_id=selected_worker_id if callback.from_user.id in BOSS_IDS else None, back_callback=back_callback)
 
 @dp.callback_query(F.data == "act_cash")
 async def start_cash(callback: CallbackQuery, state: FSMContext):
@@ -3031,51 +2991,9 @@ async def handle_store_action(message: types.Message, state: FSMContext, t_type:
 
 
 async def send_store_details(message: types.Message, store: str, state: FSMContext, force_worker_id=None):
-    await state.update_data(current_store=store)
     uid = force_worker_id if force_worker_id else message.from_user.id
-    await state.update_data(debt_worker_id=uid if message.from_user.id in BOSS_IDS else None)
-
-    w_cond, w_params = get_worker_filter(uid)
-    full_params = (store,) + w_params
-    conn = get_db()
-    cur = dict_cursor(conn)
-    cur.execute("SELECT COALESCE(SUM(total),0) AS total, COALESCE(SUM(cash),0) AS cash FROM sales WHERE normalized_store = %s " + w_cond, full_params)
-    res = cur.fetchone()
-    cur.execute("SELECT txn_type, total, cash, date FROM sales WHERE normalized_store = %s " + w_cond + " ORDER BY id DESC LIMIT 10", full_params)
-    hist = cur.fetchall()
-    conn.close()
-
-    total = res["total"]
-    cash = res["cash"]
-    safe_store = md_escape(store.upper())
-    out = (
-        f"?? **{safe_store}** hisoboti:\n"
-        f"?? Umumiy savdo: {fmt(total)}\n"
-        f"?? Yig'ilgan: {fmt(cash)}\n"
-        f"?? Qoldiq qarz: {fmt(total - cash)}\n\n"
-        f"?? Harakatlar:\n"
-    )
-    for h in hist:
-        if h["txn_type"] == "savdo":
-            out += f"?? {h['date']}\n?? Savdo: {fmt(h['total'])}\n?? Naqt: {fmt(h['cash'])}\n?? Qarz: {fmt((h['total'] or 0) - (h['cash'] or 0))}\n\n"
-        elif h["txn_type"] == "naqt":
-            out += f"?? {h['date']}\n?? Naqt kiritildi: {fmt(h['cash'])}\n\n"
-        elif h["txn_type"] == "qaytarish":
-            out += f"?? {h['date']}\n?? Qaytarish: {fmt(abs(h['total']))}\n\n"
-
-    back_button = (
-        InlineKeyboardButton(text="?? Qarzdorlar", callback_data=f"boss_debt_uid_{uid}")
-        if message.from_user.id in BOSS_IDS
-        else InlineKeyboardButton(text="?? Boshqa", callback_data="stores_list")
-    )
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="?? Naqt", callback_data="act_cash"), InlineKeyboardButton(text="?? Qaytarish", callback_data="act_return")],
-            [InlineKeyboardButton(text="?? Savdo", callback_data="act_trade"), InlineKeyboardButton(text="?? Do'konchi", callback_data="act_owner")],
-            [back_button],
-        ]
-    )
-    await message.answer(out, reply_markup=kb, parse_mode="Markdown")
+    back_callback = f"boss_debt_uid_{uid}" if message.from_user.id in BOSS_IDS else "stores_list"
+    await open_store_by_name(message, state, store, selected_worker_id=uid if message.from_user.id in BOSS_IDS else None, back_callback=back_callback)
 
 
 async def send_owner_info(target, store, state: FSMContext):
