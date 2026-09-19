@@ -24,7 +24,7 @@ from openai import OpenAI
 # ================= SOZLAMALAR =================
 API_TOKEN = os.getenv("API_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-BOSS_IDS = [5426806030, 6826780143]
+BOSS_IDS = [5426806030, 6826780143, 8964986420]
 
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 bot = Bot(token=API_TOKEN)
@@ -326,7 +326,7 @@ async def open_store_by_name(target, state: FSMContext, store: str, selected_wor
         await state.update_data(debt_worker_id=None)
     await state.update_data(store_back_callback=back_callback)
 
-    selected_uid = selected_worker_id or user_id
+    selected_uid = (selected_worker_id or user_id) if user_id in BOSS_IDS else user_id
     w_cond, w_params = get_worker_filter(selected_uid)
     full_params = (store,) + w_params
 
@@ -336,6 +336,8 @@ async def open_store_by_name(target, state: FSMContext, store: str, selected_wor
     res = cur.fetchone()
     cur.execute("SELECT COUNT(id) AS cnt FROM sales WHERE normalized_store = %s " + w_cond, full_params)
     total_rows = (cur.fetchone() or {}).get("cnt", 0) or 0
+    page = min(page, max(0, (total_rows - 1) // STORE_HISTORY_PAGE_SIZE))
+    await state.update_data(store_history_page=page)
     hist_params = full_params + (STORE_HISTORY_PAGE_SIZE, page * STORE_HISTORY_PAGE_SIZE)
     cur.execute(
         "SELECT id, txn_type, total, cash, date FROM sales WHERE normalized_store = %s "
@@ -383,6 +385,13 @@ async def open_store_by_name(target, state: FSMContext, store: str, selected_wor
         await state.update_data(boss_edit_sale_cash=hist[0]["cash"] or 0)
         await state.update_data(boss_edit_sale_date=date_head(hist[0]["date"]))
         action_rows.append([InlineKeyboardButton(text="✏️ Oxirgi amalni edit", callback_data="boss_edit_last_sale")])
+        for h in hist:
+            label = {"naqt": "Naqt", "qaytarish": "Qaytarish"}.get(h["txn_type"], "Savdo")
+            amount = h["cash"] if h["txn_type"] == "naqt" else h["total"]
+            action_rows.append([InlineKeyboardButton(
+                text=f"O'chirish: #{h['id']} {label} {fmt(amount)} | {h['date']}",
+                callback_data=f"txn_delete_preview:{h['id']}",
+            )])
 
     nav_row = []
     if page > 0:
@@ -414,6 +423,64 @@ async def store_history_page(callback: CallbackQuery, state: FSMContext):
     back_callback = data.get("store_back_callback")
     page = int(callback.data.replace("store_hist_", ""))
     await open_store_by_name(callback, state, store, selected_worker_id=selected_worker_id, back_callback=back_callback, page=page)
+
+
+@dp.callback_query(F.data.startswith("txn_delete_preview:"))
+async def txn_delete_preview(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in BOSS_IDS:
+        return await callback.answer("Faqat boss o'chira oladi.", show_alert=True)
+    sale_id = int(callback.data.split(":")[1])
+    conn = get_db()
+    try:
+        cur = dict_cursor(conn)
+        cur.execute("SELECT id, normalized_store, worker_id, txn_type, total, cash, date FROM sales WHERE id = %s", (sale_id,))
+        sale = cur.fetchone()
+    finally:
+        conn.close()
+    if not sale:
+        return await callback.answer("Amal topilmadi yoki o'chirilgan.", show_alert=True)
+    await callback.answer()
+    await state.update_data(delete_preview=dict(sale))
+    data = await state.get_data()
+    label = {"naqt": "Naqt", "qaytarish": "Qaytarish"}.get(sale["txn_type"], "Savdo")
+    out = (f"Amalni o'chirish: #{sale_id}\nTuri: {label}\n"
+           f"Ishchi ID: {sale['worker_id']}\n"
+           f"{fmt_card(sale['normalized_store'], sale['total'], sale['cash'], sale['date'])}\n\n"
+           "Faqat shu amal o'chadi va qoldiq qayta hisoblanadi. Tasdiqlaysizmi?")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Ha, o'chirish", callback_data=f"txn_delete_confirm:{sale_id}")],
+        [InlineKeyboardButton(text="Yo'q, orqaga", callback_data=f"store_hist_{data.get('store_history_page', 0)}")],
+    ])
+    await callback.message.edit_text(out, reply_markup=kb, parse_mode=None)
+
+
+@dp.callback_query(F.data.startswith("txn_delete_confirm:"))
+async def txn_delete_confirm(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in BOSS_IDS:
+        return await callback.answer("Faqat boss o'chira oladi.", show_alert=True)
+    sale_id = int(callback.data.split(":")[1])
+    data = await state.get_data()
+    preview = data.get("delete_preview")
+    if not preview or preview.get("id") != sale_id:
+        return await callback.answer("Amalni qayta tanlab tasdiqlang.", show_alert=True)
+    conn = get_db()
+    try:
+        with conn:
+            cur = dict_cursor(conn)
+            cur.execute("SELECT id, normalized_store, worker_id, txn_type, total, cash, date FROM sales WHERE id = %s FOR UPDATE", (sale_id,))
+            sale = cur.fetchone()
+            if not sale or dict(sale) != preview:
+                await state.update_data(delete_preview=None)
+                return await callback.answer("Amal o'zgargan yoki o'chirilgan. Qayta tanlang.", show_alert=True)
+            cur.execute("DELETE FROM deletion_requests WHERE sale_id = %s", (sale_id,))
+            cur.execute("DELETE FROM sales WHERE id = %s", (sale_id,))
+    finally:
+        conn.close()
+    await state.update_data(delete_preview=None)
+    await callback.answer("Amal o'chirildi.")
+    await open_store_by_name(callback, state, sale["normalized_store"],
+        selected_worker_id=sale["worker_id"], back_callback=data.get("store_back_callback"),
+        page=data.get("store_history_page", 0))
 
 
 async def notify_boss(worker_uid, store, total, cash, txn_type, date_str):
@@ -633,7 +700,7 @@ async def route_menu_button(message: types.Message, state: FSMContext):
     if text == "📅 Oylik arxiv":
         return await boss_monthly_archive(message)
     if text == "🏪 Barcha do'konlar":
-        return await boss_all_stores(message)
+        return await boss_all_stores(message, state)
     if text == "📊 Eng yaxshi ishchilar":
         return await boss_top_workers(message)
     if text == "🏆 Eng yaxshi do'konlar":
@@ -1279,7 +1346,9 @@ async def boss_monthly_archive(message: types.Message):
     await message.answer(out)
 
 
-async def render_boss_all_stores(target, state: FSMContext, filtered_stores=None, title="🏪 Barcha do'konlar"):
+async def render_boss_all_stores(target, state: FSMContext, filtered_stores=None, title="🏪 Barcha do'konlar", page=0):
+    if target.from_user.id not in BOSS_IDS:
+        return
     is_callback = isinstance(target, CallbackQuery)
     msg = target.message if is_callback else target
     conn = get_db()
@@ -1316,6 +1385,10 @@ async def render_boss_all_stores(target, state: FSMContext, filtered_stores=None
 
     store_map = {f"all_{i}": s["normalized_store"] for i, s in enumerate(stores)}
     await state.update_data(boss_all_store_map=store_map)
+    page = min(max(0, int(page)), (len(stores) - 1) // 8)
+    start = page * 8
+    visible = stores[start:start + 8]
+    await state.update_data(boss_all_store_rows=stores, boss_all_store_title=title, boss_all_store_page=page)
 
     out = (
         f"{title}\n\n"
@@ -1326,10 +1399,10 @@ async def render_boss_all_stores(target, state: FSMContext, filtered_stores=None
         f"✅ Qarzsiz do'konlar: {clean_count} ta\n\n"
         "📋 Ro'yxat:\n"
     )
-    for i, s in enumerate(stores, 1):
+    for i, s in enumerate(visible, start + 1):
         out += (
-            f"{i}. 🏪 {s['normalized_store']}\n"
-            f"👤 Ishchi: {s['worker_name'] or 'nomaʼlum'}\n"
+            f"{i}. 🏪 {s['normalized_store'][:100]}\n"
+            f"👤 Ishchi: {(s['worker_name'] or 'nomaʼlum')[:100]}\n"
             f"💰 Savdo: {fmt(s['total_sales'])}\n"
             f"💵 Naqt: {fmt(s['total_cash'])}\n"
             f"📉 Qarz: {fmt(s['total_debt'])}\n\n"
@@ -1338,9 +1411,16 @@ async def render_boss_all_stores(target, state: FSMContext, filtered_stores=None
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=f"🏪 {s['normalized_store']}", callback_data=f"bstore_all_{i}")]
-            for i, s in enumerate(stores)
+            for i, s in enumerate(visible, start)
         ]
     )
+    navigation = []
+    if page:
+        navigation.append(InlineKeyboardButton(text="Oldingi", callback_data=f"allshops_page:{page - 1}"))
+    if start + 8 < len(stores):
+        navigation.append(InlineKeyboardButton(text="Keyingi", callback_data=f"allshops_page:{page + 1}"))
+    if navigation:
+        kb.inline_keyboard.append(navigation)
     kb.inline_keyboard.append(
         [
             InlineKeyboardButton(text="📉 Qarzdorlar", callback_data="stores_filter_debt"),
@@ -1355,27 +1435,40 @@ async def render_boss_all_stores(target, state: FSMContext, filtered_stores=None
     )
     kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="back_main")])
     if is_callback:
-        await msg.edit_text(out, reply_markup=kb)
+        await msg.edit_text(out, reply_markup=kb, parse_mode=None)
     else:
-        await msg.answer(out, reply_markup=kb)
+        await msg.answer(out, reply_markup=kb, parse_mode=None)
 
 
 @dp.message(F.text == "🏪 Barcha do'konlar")
 async def boss_all_stores(message: types.Message, state: FSMContext):
     if message.from_user.id not in BOSS_IDS:
         return
+    await state.clear()
     await render_boss_all_stores(message, state)
+
+
+@dp.callback_query(F.data.startswith("allshops_page:"))
+async def allshops_page(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in BOSS_IDS:
+        return await callback.answer("Ruxsat yo'q.", show_alert=True)
+    await callback.answer()
+    data = await state.get_data()
+    await render_boss_all_stores(callback, state, data.get("boss_all_store_rows"),
+        data.get("boss_all_store_title", "Barcha do'konlar"), int(callback.data.split(":")[1]))
 
 
 @dp.callback_query(F.data.startswith("bstore_all_"))
 async def boss_all_store_open(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in BOSS_IDS:
+        return await callback.answer("Ruxsat yo'q.", show_alert=True)
     await callback.answer()
     idx = callback.data.replace("bstore_all_", "")
     data = await state.get_data()
     store = (data.get("boss_all_store_map") or {}).get(f"all_{idx}")
     if not store:
         return await callback.answer("⚠️ Do'kon topilmadi.", show_alert=True)
-    await open_store_by_name(callback, state, store, back_callback="stores_filter_back_all")
+    await open_store_by_name(callback, state, store, back_callback=f"allshops_page:{data.get('boss_all_store_page', 0)}")
 
 
 @dp.callback_query(F.data == "stores_filter_debt")
